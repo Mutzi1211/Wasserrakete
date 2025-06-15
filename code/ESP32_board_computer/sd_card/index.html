@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>ESP32 Aktionsplan</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 2rem auto;
+      max-width: 800px;
+      padding: 0 1rem;
+      background-color: #f0f2f5;
+      color: #333;
+    }
+
+    h1, h2 {
+      text-align: center;
+      color: #333;
+    }
+
+    .function-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      justify-content: center;
+      margin-bottom: 2rem;
+    }
+
+    .function-buttons button {
+      padding: 0.6rem 1rem;
+      background: #007acc;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .function-buttons button:hover {
+      background: #005fa3;
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: center;
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+
+    .sequence-section {
+      background: white;
+      padding: 1rem;
+      border-radius: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+      margin-bottom: 2rem;
+    }
+
+    .action {
+      background: #eef3f8;
+      border-radius: 8px;
+      padding: 1rem;
+      margin: 1rem 0;
+      position: relative;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+
+    .move-buttons {
+      position: absolute;
+      right: 10px;
+      top: 10px;
+    }
+
+    .move-buttons button {
+      background: none;
+      border: none;
+      font-size: 1.2rem;
+      cursor: pointer;
+      margin-left: 8px;
+      color: #666;
+    }
+
+    .move-buttons button:hover {
+      color: #000;
+    }
+
+    label {
+      margin-right: 1rem;
+    }
+
+    input[type=number] {
+      width: 70px;
+      padding: 0.2rem 0.4rem;
+      font-size: 1rem;
+      margin-left: 0.3rem;
+    }
+
+    .primary {
+      display: inline-block;
+      margin-top: 1rem;
+      padding: 0.6rem 1.2rem;
+      font-size: 1rem;
+      background: #28a745;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .primary:hover {
+      background: #1f8c3f;
+    }
+  </style>
+</head>
+<body>
+  <h1>ESP32 Aktionssequenz</h1>
+
+  <div class="function-buttons" id="functionButtons"></div>
+
+  <div class="toolbar">
+    <label><input type="radio" name="target" value="setup" checked> 🔧 Setup</label>
+    <label><input type="radio" name="target" value="loop"> 🔁 Loop</label>
+  </div>
+
+  <div class="sequence-section">
+    <h2>🔧 Setup-Bereich</h2>
+    <div id="setup-sequence"></div>
+  </div>
+
+  <div class="sequence-section">
+    <h2>🔁 Loop-Bereich</h2>
+    <div id="loop-sequence"></div>
+  </div>
+
+  <div style="text-align: center;">
+    <button class="primary" onclick="sendSequence()">🚀 Start</button>
+  </div>
+
+  <script>
+    let functions = [];
+
+    fetch('functions.json')
+      .then(r => r.json())
+      .then(data => {
+        functions = data;
+        const btnContainer = document.getElementById('functionButtons');
+
+        functions.forEach(fn => {
+          const btn = document.createElement('button');
+          btn.textContent = fn.name;
+          btn.title = fn.description || "Keine Beschreibung";
+          btn.onclick = () => addAction(fn.name);
+          btnContainer.appendChild(btn);
+        });
+      });
+
+    function addAction(name) {
+      const fn = functions.find(f => f.name === name);
+      const target = document.querySelector('input[name="target"]:checked').value;
+      const container = document.getElementById(target + '-sequence');
+
+      const div = document.createElement('div');
+      div.className = 'action';
+      div.id = 'id_' + Math.random().toString(36).substr(2, 9);
+
+      const controls = document.createElement('div');
+      controls.className = 'move-buttons';
+      controls.innerHTML = `
+        <button onclick="moveUp(this)" title="Nach oben">⬆️</button>
+        <button onclick="moveDown(this)" title="Nach unten">⬇️</button>
+        <button onclick="deleteBlock(this)" title="Löschen">🗑️</button>
+      `;
+
+      const title = document.createElement('strong');
+      title.textContent = fn.name;
+
+      const nameInput = document.createElement('input');
+      nameInput.type = 'hidden';
+      nameInput.className = 'name';
+      nameInput.value = fn.name;
+
+      const paramFields = fn.params.map(p =>
+        `<label>${p}:<input type="number" class="param" data-key="${p}"></label>`
+      ).join(' ');
+
+      div.appendChild(controls);
+      div.appendChild(title);
+      div.appendChild(nameInput);
+      div.innerHTML += ' ' + paramFields;
+
+      container.appendChild(div);
+    }
+
+    function moveUp(btn) {
+      const div = btn.closest('.action');
+      const prev = div.previousElementSibling;
+      if (prev) div.parentNode.insertBefore(div, prev);
+    }
+
+    function moveDown(btn) {
+      const div = btn.closest('.action');
+      const next = div.nextElementSibling;
+      if (next) div.parentNode.insertBefore(next, div);
+    }
+
+    function deleteBlock(btn) {
+      const div = btn.closest('.action');
+      div.remove();
+    }
+
+    function collectSequence(id) {
+      const sequence = [];
+      document.querySelectorAll(`#${id} .action`).forEach(el => {
+        const name = el.querySelector('.name').value;
+        const params = {};
+        el.querySelectorAll('.param').forEach(p => {
+          params[p.dataset.key] = parseInt(p.value) || 0;
+        });
+        sequence.push({ name, params });
+      });
+      return sequence;
+    }
+
+    function sendSequence() {
+      const data = {
+        setup: collectSequence('setup-sequence'),
+        loop: collectSequence('loop-sequence')
+      };
+
+      fetch('/run_sequence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      }).then(r => r.text()).then(alert);
+    }
+  </script>
+</body>
+</html>
