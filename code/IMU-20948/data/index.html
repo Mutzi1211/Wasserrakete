@@ -1,100 +1,118 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8">
-  <title>ICM-20948 IMU Dashboard</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ESP32 Rakete Orientierungssimulation</title>
   <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 1rem;
-      background: #f4f7f9;
-      color: #333;
-    }
-    h1 {
-      margin-bottom: .5rem;
-      color: #005b96;
-    }
-    .cards {
-      display: flex;
-      gap: 1rem;
-      flex-wrap: wrap;
-      justify-content: center;
-      margin-top: 1rem;
-    }
-    .card {
-      background: #fff;
-      border-radius: 12px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-      padding: 1rem 1.5rem;
-      min-width: 120px;
-      text-align: center;
-    }
-    .value {
-      font-size: 2rem;
-      font-weight: bold;
-      margin-top: .5rem;
-      color: #007acc;
-    }
-    #calibButton {
-      margin-top: 1.5rem;
-      padding: .75rem 1.5rem;
-      font-size: 1rem;
-      border: none;
-      border-radius: 8px;
-      background: #007acc;
-      color: white;
-      cursor: pointer;
-      transition: background 0.2s ease;
-    }
-    #calibButton:hover {
-      background: #005f9e;
+    body { margin: 0; overflow: hidden; }
+    #info {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #ffffff;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 5px;
+      font-family: sans-serif;
     }
   </style>
 </head>
 <body>
-  <h1>ICM-20948 IMU – Lage</h1>
-  <div class="cards">
-    <div class="card">
-      <div>Pitch</div>
-      <div id="pitch" class="value">–</div>
-    </div>
-    <div class="card">
-      <div>Roll</div>
-      <div id="roll" class="value">–</div>
-    </div>
-    <div class="card">
-      <div>Yaw</div>
-      <div id="yaw" class="value">–</div>
-    </div>
-  </div>
-  <button id="calibButton">Sensor kalibrieren</button>
+  <div id="info">Verbinde zum WebSocket...</div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r141/three.min.js"></script>
   <script>
-    const socket = new WebSocket(`ws://${location.host}/ws`);
-    socket.addEventListener('message', ev => {
+    // === Grundlegende Three.js Setup ===
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 2, 5);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // === Licht ===
+    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambient);
+    const directional = new THREE.DirectionalLight(0xffffff, 0.8);
+    directional.position.set(5, 10, 7.5);
+    scene.add(directional);
+
+    // === Raketenmodell (einfach) ===
+    const rocket = new THREE.Group();
+    // Körper
+    const bodyGeo = new THREE.CylinderGeometry(0.2, 0.2, 3, 32);
+    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x5555ff });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    rocket.add(body);
+    // Spitze
+    const noseGeo = new THREE.ConeGeometry(0.2, 0.5, 32);
+    const noseMat = new THREE.MeshStandardMaterial({ color: 0xff5555 });
+    const nose = new THREE.Mesh(noseGeo, noseMat);
+    nose.position.y = 1.75;
+    rocket.add(nose);
+    // Fins
+    const finGeo = new THREE.BoxGeometry(0.05, 0.5, 0.2);
+    const finMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+    for (let i = 0; i < 4; i++) {
+      const fin = new THREE.Mesh(finGeo, finMat);
+      const angle = (i / 4) * Math.PI * 2;
+      fin.position.set(Math.sin(angle) * 0.2, -1.25, Math.cos(angle) * 0.2);
+      fin.rotation.y = angle;
+      rocket.add(fin);
+    }
+    scene.add(rocket);
+
+    // === Fenstergrößenänderung ===
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // === WebSocket-Verbindung ===
+    const info = document.getElementById('info');
+    // Passen Sie diese URL an die IP/Port Ihres ESP32 an
+    const wsUrl = 'ws://192.168.4.1:81';
+    const socket = new WebSocket(wsUrl);
+
+    socket.addEventListener('open', () => {
+      info.textContent = 'WebSocket verbunden';
+    });
+
+    socket.addEventListener('message', (event) => {
+      // Erwartetes JSON-Format: { yaw: <deg>, pitch: <deg>, roll: <deg> }
       try {
-        const d = JSON.parse(ev.data);
-        document.getElementById('pitch').textContent = d.pitch.toFixed(2) + '°';
-        document.getElementById('roll' ).textContent = d.roll .toFixed(2) + '°';
-        document.getElementById('yaw'  ).textContent = d.yaw  .toFixed(2) + '°';
-      } catch(e){
-        console.error('Parsing error', e);
+        const data = JSON.parse(event.data);
+        // In Radiant umrechnen
+        const yaw = THREE.MathUtils.degToRad(data.yaw);
+        const pitch = THREE.MathUtils.degToRad(data.pitch);
+        const roll = THREE.MathUtils.degToRad(data.roll);
+        // Rotation anwenden (Reihenfolge: Yaw, Pitch, Roll)
+        rocket.rotation.order = 'ZYX';
+        rocket.rotation.x = pitch;   // Kippen
+        rocket.rotation.y = yaw;     // Gieren
+        rocket.rotation.z = roll;    // Rollen
+        info.textContent = `Yaw: ${data.yaw.toFixed(1)}°, Pitch: ${data.pitch.toFixed(1)}°, Roll: ${data.roll.toFixed(1)}°`;
+      } catch (e) {
+        console.error('Ungültige WebSocket-Nachricht:', event.data);
       }
     });
-    document.getElementById('calibButton').addEventListener('click', () => {
-      fetch('/calibrate')
-        .then(response => response.text())
-        .then(txt => {
-          alert('Kalibrierung läuft – siehe seriellen Monitor');
-        })
-        .catch(err => {
-          console.error('Fehler bei der Kalibrierung:', err);
-          alert('Fehler bei der Kalibrierung');
-        });
+
+    socket.addEventListener('close', () => {
+      info.textContent = 'WebSocket getrennt';
     });
+
+    socket.addEventListener('error', (err) => {
+      info.textContent = 'WebSocket-Fehler';
+      console.error(err);
+    });
+
+    // === Animationsloop ===
+    function animate() {
+      requestAnimationFrame(animate);
+      renderer.render(scene, camera);
+    }
+    animate();
   </script>
 </body>
 </html>
