@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>ICM-20948 IMU Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex; flex-direction: column;
+      align-items: center;
+      padding: 1rem;
+      background: #f4f7f9;
+      color: #333;
+    }
+    h1 {
+      margin-bottom: .5rem;
+      color: #005b96;
+    }
+    .cards {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-top: 1rem;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      padding: 1rem 1.5rem;
+      min-width: 120px;
+      text-align: center;
+    }
+    .value {
+      font-size: 2rem;
+      font-weight: bold;
+      margin-top: .5rem;
+      color: #007acc;
+    }
+  </style>
+</head>
+<body>
+  <h1>ICM-20948 IMU – Lage</h1>
+  <div class="cards">
+    <div class="card">
+      <div>Pitch</div>
+      <div id="pitch" class="value">–</div>
+    </div>
+    <div class="card">
+      <div>Roll</div>
+      <div id="roll" class="value">–</div>
+    </div>
+    <div class="card">
+      <div>Yaw</div>
+      <div id="yaw" class="value">–</div>
+    </div>
+  </div>
+
+  <script>
+    const socket = new WebSocket(`ws://${location.host}/ws`);
+    socket.addEventListener('message', ev => {
+      try {
+        const d = JSON.parse(ev.data);
+        document.getElementById('pitch').textContent = d.pitch.toFixed(2) + '°';
+        document.getElementById('roll' ).textContent = d.roll .toFixed(2) + '°';
+        document.getElementById('yaw'  ).textContent = d.yaw  .toFixed(2) + '°';
+      } catch(e){
+        console.error('Parsing error', e);
+      }
+    });
+  </script>
+</body>
+</html>
