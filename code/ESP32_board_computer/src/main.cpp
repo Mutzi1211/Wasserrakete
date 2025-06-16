@@ -2,154 +2,106 @@
 #include <WiFi.h>
 #include <SPI.h>
 #include <SD.h>
-#include <AsyncTCP.h>
+#include <Update.h>
 #include <ESPAsyncWebServer.h>
-#include <ArduinoJson.h>
+#include <AsyncTCP.h>
+#include <ArduinoOTA.h>
+#include <WebSocketsServer.h>
+#include <stdarg.h>
 
-// WLAN-Zugangsdaten
 const char* ssid = "UniFi";
 const char* password = "lassmichbitterein";
+#define SD_CS_PIN 5
 
-// Definiere die Pins für den benutzerdefinierten SPI-Bus
-#define PIN_SPI_MISO 19  // Data In
-#define PIN_SPI_MOSI 23  // Data Out
-#define PIN_SPI_SCK 18   // Clock
-#define SD_CS_PIN 5      // Chip Select (CS) für die SD-Karte
-
-SPIClass mySPI(VSPI);
-
-// Webserver-Port
 AsyncWebServer server(80);
+WebSocketsServer webSocket(81);
 
-// ======= Beispiel-Funktionen =======
-void ledBlink(int duration) {
-  Serial.printf("ledBlink(%d)\n", duration);
-  pinMode(13, OUTPUT);
-  digitalWrite(13, HIGH);
-  delay(duration);
-  digitalWrite(13, LOW);
-  delay(duration);
+// --- Logging mit printf-Stil ---
+void serialLog(const char* format, ...) {
+  char buffer[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+
+  Serial.println(buffer);
+  webSocket.broadcastTXT(buffer);
 }
 
-void relaisOn(int duration) {
-  Serial.printf("relaisOn(%d)\n", duration);
-  pinMode(6, OUTPUT);
-  digitalWrite(6, HIGH);
-  delay(duration);
-  digitalWrite(6, LOW);
+// WebSocket Callback (nicht genutzt, aber nötig)
+void handleWebSocket(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {}
+
+void listFiles(AsyncWebServerRequest *request) {
+  String output = "[";
+  File root = SD.open("/");
+  while (File file = root.openNextFile()) {
+    if (output != "[") output += ",";
+    output += "\"" + String(file.name()) + "\"";
+    file.close();
+  }
+  output += "]";
+  request->send(200, "application/json", output);
 }
 
-void sensorRead(int analogPin) {
-  Serial.printf("sensorRead(%d)\n", analogPin);
-  int value = analogRead(analogPin);
-  Serial.println("Sensorwert: " + String(value));
-  delay(200);
-}
-
-void setupWebServer() {
-  server.onNotFound([](AsyncWebServerRequest* request) {
-    String path = request->url();
-    if (path == "/") {
-      path = "/dashboard.html";
-    }
-
-    if (!SD.exists(path)) {
-      request->send(404, "text/plain", "404: Datei nicht gefunden");
-      return;
-    }
-
-    File file = SD.open(path, FILE_READ);
-    if (file) {
-      String contentType = "text/plain";
-      if (path.endsWith(".html")) contentType = "text/html";
-      else if (path.endsWith(".css")) contentType = "text/css";
-      else if (path.endsWith(".js")) contentType = "application/javascript";
-      else if (path.endsWith(".png")) contentType = "image/png";
-      else if (path.endsWith(".jpg") || path.endsWith(".jpeg")) contentType = "image/jpeg";
-      else if (path.endsWith(".gif")) contentType = "image/gif";
-      else if (path.endsWith(".ico")) contentType = "image/x-icon";
-      else if (path.endsWith(".xml")) contentType = "text/xml";
-      else if (path.endsWith(".pdf")) contentType = "application/pdf";
-
-      AsyncWebServerResponse* response = request->beginResponse(SD, path, contentType);
-      request->send(response);
-      file.close();
-    } else {
-      request->send(500, "text/plain", "500: Fehler beim Öffnen der Datei");
-    }
-  });
-
-  // Sequenz empfangen und ausführen
-server.on("/run_sequence", HTTP_POST, [](AsyncWebServerRequest *request) {},
-  NULL, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-    StaticJsonDocument<1024> doc;
-    DeserializationError error = deserializeJson(doc, data, len);
-    if (error) {
-      request->send(400, "text/plain", "Ungültiges JSON");
-      return;
-    }
-
-    JsonArray setup = doc["setup"];
-    JsonArray loop = doc["loop"];
-
-    for (JsonObject step : setup) {
-      String name = step["name"];
-      JsonObject params = step["params"];
-
-    Serial.println("name: " + name);
-    Serial.println("params: " + params);
-
-      if (name == "ledBlink") {
-        ledBlink(params["duration"]);
-      } else if (name == "relaisOn") {
-        relaisOn(params["duration"]);
-      } else if (name == "sensorRead") {
-        sensorRead(params["analogPin"]);
-      }
-    }
-
-    request->send(200, "text/plain", "Sequenz empfangen und ausgeführt.");
-});
-
-
-  server.begin();
-  Serial.println("Async Webserver gestartet.");
-}
-
-
-// ======= Setup =======
 void setup() {
   Serial.begin(115200);
-
-  Serial.println("Starte SD-Karten Test...");
-
-  // Initialisiere den benutzerdefinierten SPI-Bus mit den definierten Pins
-  mySPI.begin(PIN_SPI_SCK, PIN_SPI_MISO, PIN_SPI_MOSI, SD_CS_PIN);
-
-  // SD-Karten-Initialisierung über den benutzerdefinierten SPI-Bus
-  if (!SD.begin(SD_CS_PIN, mySPI)) {
-    Serial.println("SD-Karten Initialisierung fehlgeschlagen!");
-    return;
-  }
-  Serial.println("SD-Karte erfolgreich initialisiert.");
-
-  // WLAN verbinden
   WiFi.begin(ssid, password);
-  Serial.print("Verbinde mit WLAN");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nWLAN verbunden: " + WiFi.localIP().toString());
+  serialLog("WLAN verbunden: %s", WiFi.localIP().toString().c_str());
 
- 
+  if (!SD.begin(SD_CS_PIN)) {
+    serialLog("SD-Karte nicht gefunden");
+    return;
+  }
 
-  // Root: index.html aus SD
-  setupWebServer();
+  ArduinoOTA.begin();
+  webSocket.begin();
+  webSocket.onEvent(handleWebSocket);
+
+  // --- Datei-Upload mit automatischem Überschreiben ---
+  server.on("/upload", HTTP_POST, [](AsyncWebServerRequest *request) {
+    request->send(200);
+  }, [](AsyncWebServerRequest *request, String filename, size_t index,
+        uint8_t *data, size_t len, bool final) {
+    static File file;
+    if (index == 0) {
+      String path = "/" + filename;
+      if (SD.exists(path)) SD.remove(path);
+      file = SD.open(path, FILE_WRITE);
+    }
+    if (file) file.write(data, len);
+    if (final && file) file.close();
+  });
+
+  // --- Datei löschen ---
+  server.on("/delete", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("name", true)) {
+      String name = request->getParam("name", true)->value();
+      if (SD.exists("/" + name)) SD.remove("/" + name);
+    }
+    request->send(200);
+  });
+
+  server.on("/list", HTTP_GET, listFiles);
+
+  // --- SD-Karte als Webroot, index.html als Startseite ---
+  server.serveStatic("/", SD, "/").setDefaultFile("index.html");
+
+  server.begin();
 }
 
+void loop() {
+  ArduinoOTA.handle();
+  webSocket.loop();
 
-
-
-// ======= Loop nicht benötigt =======
-void loop() {}
+  // Beispielausgabe
+  static unsigned long lastLog = 0;
+  static int i = 0;
+  if (millis() - lastLog > 1000) {
+    lastLog = millis();
+    serialLog("Batterie: %d%%", i++);
+  }
+}
