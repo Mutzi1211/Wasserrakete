@@ -7,7 +7,8 @@
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      display: flex; flex-direction: column;
+      display: flex;
+      flex-direction: column;
       align-items: center;
       padding: 1rem;
       background: #f4f7f9;
@@ -38,6 +39,20 @@
       margin-top: .5rem;
       color: #007acc;
     }
+    #calibButton {
+      margin-top: 1.5rem;
+      padding: .75rem 1.5rem;
+      font-size: 1rem;
+      border: none;
+      border-radius: 8px;
+      background: #007acc;
+      color: white;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+    #calibButton:hover {
+      background: #005f9e;
+    }
   </style>
 </head>
 <body>
@@ -56,7 +71,7 @@
       <div id="yaw" class="value">–</div>
     </div>
   </div>
-
+  <button id="calibButton">Sensor kalibrieren</button>
   <script>
     const socket = new WebSocket(`ws://${location.host}/ws`);
     socket.addEventListener('message', ev => {
@@ -68,6 +83,17 @@
       } catch(e){
         console.error('Parsing error', e);
       }
+    });
+    document.getElementById('calibButton').addEventListener('click', () => {
+      fetch('/calibrate')
+        .then(response => response.text())
+        .then(txt => {
+          alert('Kalibrierung läuft – siehe seriellen Monitor');
+        })
+        .catch(err => {
+          console.error('Fehler bei der Kalibrierung:', err);
+          alert('Fehler bei der Kalibrierung');
+        });
     });
   </script>
 </body>
