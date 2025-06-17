@@ -52,8 +52,8 @@ def main():
     })
 
     # 6) Export in CSV
-    df_out.to_csv(args.output_csv, index=False)
-    print(f"Berechnete Daten gespeichert in: {args.output_csv}")
+    # df_out.to_csv(args.output_csv, index=False)
+    # print(f"Berechnete Daten gespeichert in: {args.output_csv}")
 
     # --- 2D-Plot: Höhe vs. Zeit mit Markern ---
     plt.figure(figsize=(10, 6))
