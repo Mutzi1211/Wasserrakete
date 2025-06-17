@@ -4,7 +4,6 @@
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-#include <SparkFun_BNO08x_Arduino_Library.h>
 #include <SparkFunBME280.h>
 
 // ---- I²C-Pins ----
@@ -25,7 +24,6 @@ const char* password = "lassmichbitterein";
 
 // ---- Sensor-Objekte ----
 BME280    myBME;
-BNO08x    myIMU;
 
 // ---- Web-Server & WebSocket ----
 AsyncWebServer   server(80);
