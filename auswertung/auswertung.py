@@ -57,7 +57,7 @@ def main():
 
     # --- 2D-Plot: Höhe vs. Zeit mit Markern ---
     plt.figure(figsize=(10, 6))
-    plt.plot(t, altitude, linestyle='-', marker='o', markersize=3, label='Altitude (m)')
+    plt.plot(t, altitude, linestyle='-', marker='o', markersize=3, label='Altitude (m)')    # type: ignore
     plt.xlabel('Zeit (s)')
     plt.ylabel('Höhe (m)')
     plt.title('Flugkurve: Höhe vs. Zeit')
@@ -67,10 +67,10 @@ def main():
     # --- 3D-Plot: Flugtrajektorie mit Markern ---
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
-    ax.plot(x, y, z, linestyle='-', marker='o', markersize=2, label='Flugbahn')
+    ax.plot(x, y, z, linestyle='-', marker='o', markersize=2, label='Flugbahn')     # type: ignore
     ax.set_xlabel('X-Position (m)')
     ax.set_ylabel('Y-Position (m)')
-    ax.set_zlabel('Höhe (m)')
+    ax.set_zlabel('Höhe (m)')       # type: ignore
     ax.set_title('3D-Flugtrajektorie')
     ax.legend()
 
