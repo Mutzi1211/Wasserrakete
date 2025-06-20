@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <title>SD-Dateibrowser</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background-color: #f4f4f4;
+      padding: 2em;
+    }
+    ul { 
+      list-style: none; 
+      padding-left: 1em; 
+      border-left: 2px solid #ccc; 
+    }
+    li { 
+      margin: 4px 0; 
+    }
+    .folder::before { 
+      content: "📁 "; 
+    }
+    .file::before { 
+      content: "📄 "; 
+    }
+    .toggle { 
+      cursor: pointer; 
+    }
+    .hidden { 
+      display: none; 
+    }
+    form { 
+      margin-bottom: 2em; 
+    }
+  </style>
+</head>
+<body>
+  <h2>📤 Datei hochladen</h2>
+  <form id="uploadForm" enctype="multipart/form-data">
+    <input type="file" name="upload" id="fileInput" required>
+    <input type="submit" value="Hochladen">
+  </form>
+
+  <h2>📂 SD-Karte Inhalt</h2>
+  <div id="tree">Lade...</div>
+
+  <script>
+    // Lädt den Verzeichnis-Baum von /list.json und baut ihn auf
+    async function loadTree() {
+      try {
+        const res = await fetch("/list.json");
+        const data = await res.json();
+        const container = document.getElementById("tree");
+        container.innerHTML = "";
+        container.appendChild(buildTree(data, ""));
+      } catch {
+        document.getElementById("tree").textContent = "⚠️ Fehler beim Laden.";
+      }
+    }
+
+    /**
+     * Baut rekursiv eine Baum-UL auf.
+     * @param {Array} data         Array von Einträgen { name, type, children? }
+     * @param {string} currentPath Relativer Pfad (endet mit '/' oder ist leer)
+     */
+    function buildTree(data, currentPath) {
+      const ul = document.createElement("ul");
+      for (const item of data) {
+        const li = document.createElement("li");
+        li.className = item.type;
+
+        const itemPath = currentPath + item.name;
+
+        if (item.type === "folder") {
+          // Ordner einklappbar machen
+          const span = document.createElement("span");
+          span.className = "toggle";
+          span.textContent = item.name;
+          span.onclick = () => childUl.classList.toggle("hidden");
+          li.appendChild(span);
+
+          // Kinder rekursiv einbauen
+          const childUl = buildTree(item.children || [], itemPath + "/");
+          childUl.classList.add("hidden");
+          li.appendChild(childUl);
+
+        } else {
+          // Datei als Link
+          const a = document.createElement("a");
+          a.href = "/" + itemPath;
+          a.textContent = item.name;
+          a.target = "_blank";
+          li.appendChild(a);
+        }
+
+        ul.appendChild(li);
+      }
+      return ul;
+    }
+
+    // Upload-Formular per JavaScript abfangen
+    document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const input = document.getElementById('fileInput');
+      if (!input.files.length) return;
+
+      const formData = new FormData();
+      formData.append('upload', input.files[0]);
+
+      try {
+        const res = await fetch('/upload', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (res.ok) {
+          alert('✅ Upload erfolgreich!');
+          input.value = '';
+          loadTree(); // Baum frisch laden
+        } else {
+          alert('❌ Upload fehlgeschlagen: ' + res.statusText);
+        }
+      } catch (err) {
+        alert('⚠️ Fehler beim Upload: ' + err.message);
+      }
+    });
+
+    // Beim ersten Laden der Seite
+    loadTree();
+  </script>
+</body>
+</html>
