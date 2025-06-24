@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Flugbahn & Gesamt-Beschleunigung der Wasserrakete</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 2em;
+      background: #f4f4f4;
+    }
+    #controls {
+      max-width: 800px;
+      margin: 0 auto 1em;
+      display: flex;
+      gap: 0.5em;
+      align-items: center;
+    }
+    #chart-container {
+      width: 100%;
+      max-width: 800px;
+      margin: auto;
+    }
+    canvas {
+      width: 100% !important;
+      height: auto !important;
+    }
+  </style>
+  <!-- Chart.js laden -->
+  <script src="chart.js"></script>
+</head>
+<body>
+  <h1>Flugbahn & Gesamt-Beschleunigung der Wasserrakete</h1>
+
+  <div id="controls">
+    <label for="fileSelect">Log-Datei wählen:</label>
+    <select id="fileSelect">
+      <option value="" disabled selected>Warte…</option>
+    </select>
+    <button id="loadBtn">Laden</button>
+  </div>
+
+  <div id="chart-container">
+    <canvas id="flightChart"></canvas>
+  </div>
+
+  <script>
+    // Druck (hPa) → Höhe über Meeresspiegel (m)
+    function pressureToAltitude(p) {
+      return 44330 * (1 - Math.pow(p / 1013.25, 1/5.255));
+    }
+
+    // CSV-Text → Array von Objekten
+    function parseCSV(text) {
+      const [hdr, ...lines] = text.trim().split('\n');
+      const keys = hdr.split(',');
+      return lines.map(line => {
+        const cols = line.split(',');
+        const obj = {};
+        keys.forEach((k,i) => obj[k] = parseFloat(cols[i]) || 0);
+        return obj;
+      });
+    }
+
+    // list.json auslesen und Dropdown befüllen (Descending Order)
+    async function populateDropdown() {
+      const res = await fetch('/list.json');
+      if (!res.ok) throw new Error('list.json konnte nicht geladen werden');
+      const tree = await res.json();
+      const files = [];
+      (function walk(nodes, path) {
+        for (const it of nodes) {
+          if (it.type === 'file' && /^log_\d{4}\.csv$/.test(it.name)) {
+            files.push(path + it.name);
+          } else if (it.type === 'folder') {
+            walk(it.children||[], path + it.name + '/');
+          }
+        }
+      })(tree, '/');
+      // Sortieren in absteigender Reihenfolge
+      files.sort((a, b) => b.localeCompare(a));
+      const sel = document.getElementById('fileSelect');
+      const prev = sel.value;
+      sel.innerHTML = '<option value="" disabled>Bitte wählen…</option>';
+      for (const f of files) {
+        const opt = document.createElement('option');
+        opt.value = f;
+        opt.textContent = f.replace(/^\//,'');
+        sel.appendChild(opt);
+      }
+      sel.value = files.includes(prev) ? prev : '';
+    }
+
+    let chart = null;
+
+    // Chart zeichnen / updaten
+    async function drawChart(path) {
+      const res = await fetch(path);
+      if (!res.ok) throw new Error('CSV konnte nicht geladen werden');
+      const txt = await res.text();
+      const data = parseCSV(txt);
+
+      const labels = data.map(r => (r.time_us / 1e6).toFixed(3));
+      const rawH = data.map(r => pressureToAltitude(r.press_hPa));
+      const baseH = rawH[0] || 0;
+      const relH = rawH.map(h => h - baseH);
+
+      const accelRaw = data.map(r => Math.sqrt(
+        (r.accelX||r.accel_x||0)**2 +
+        (r.accelY||r.accel_y||0)**2 +
+        (r.accelZ||r.accel_z||0)**2
+      ));
+      const accelLin = data.map(r => Math.sqrt(
+        (r.linAccelX||r.linAccel_x||0)**2 +
+        (r.linAccelY||r.linAccel_y||0)**2 +
+        (r.linAccelZ||r.linAccel_z||0)**2
+      ));
+
+      const ctx = document.getElementById('flightChart').getContext('2d');
+      const cfg = {
+        type: 'line',
+        data: { labels, datasets: [
+          { label: 'Höhe über Boden (m)', data: relH, yAxisID: 'y-height', borderWidth: 2, fill: false },
+          { label: 'Gesamt-Beschleunigung (roh) (m/s²)', data: accelRaw, yAxisID: 'y-accel', borderWidth: 2, borderDash: [5,5], fill: false },
+          { label: 'Gesamt-Beschleunigung (linear) (m/s²)', data: accelLin, yAxisID: 'y-accel', borderWidth: 2, borderDash: [10,5], fill: false }
+        ]},
+        options: {
+          scales: {
+            x: { title: { display: true, text: 'Zeit (s)' } },
+            'y-height': { beginAtZero: true, position: 'left', title: { display: true, text: 'Höhe über Boden (m)' } },
+            'y-accel': { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Beschleunigung (m/s²)' } }
+          },
+          plugins: { title: { display: true, text: `Flugbahn & Beschleunigung: ${path.replace(/^\//,'')}` }, legend: { display: true } }
+        }
+      };
+      if (chart) { chart.config = cfg; chart.update(); } else { chart = new Chart(ctx, cfg); }
+    }
+
+    // Load- / Reload-Button-Handler
+    const loadBtn = document.getElementById('loadBtn');
+    loadBtn.addEventListener('click', async () => {
+      const sel = document.getElementById('fileSelect');
+      if (!loadBtn.dataset.loaded) {
+        if (!sel.value) { alert('Bitte eine Log-Datei auswählen.'); return; }
+        try { await drawChart(sel.value); loadBtn.textContent = 'Neu laden'; loadBtn.dataset.loaded = 'true'; }
+        catch (e) { alert(e.message); }
+      } else {
+        window.location.reload();
+      }
+    });
+
+    // SSE: Dropdown und Chart automatisch aktualisieren
+    const sse = new EventSource('/events');
+    sse.addEventListener('file-changed', async () => {
+      try { await populateDropdown(); const sel = document.getElementById('fileSelect'); if (sel.value && loadBtn.dataset.loaded) await drawChart(sel.value); }
+      catch (err) { console.error('Update fehlgeschlagen:', err); }
+    });
+    sse.onerror = err => console.error('SSE-Fehler:', err);
+
+    // Erstbefüllung
+    populateDropdown().catch(err => console.error(err));
+  </script>
+</body>
+</html>

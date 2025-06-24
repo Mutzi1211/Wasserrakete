@@ -1,9 +1,13 @@
+#include "SparkFun_BNO08x_Arduino_Library.h"
 #include <Arduino.h>
+#include <AsyncEventSource.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <FS.h>
 #include <SD.h>
 #include <SPI.h>
+#include <SparkFunBME280.h>
+#include <SparkFun_MAX1704x_Fuel_Gauge_Arduino_Library.h>
 #include <WiFi.h>
 #include <Wire.h>
 
@@ -21,25 +25,113 @@
 
 #define SD_CS 5 // Chip Select (CS) für die SD-Karte
 
+File csvFile;
+
 // Pinbelegung I2C
 #define SDA 21 // Data Line
 #define SCL 22 // Clock Line
+
+#define INT_PIN 32
+#define RST_PIN 14
+
+#define BNO08x_EASY_MODE true
+#define BNO08X_ADDR 0x4B
 
 #define BOOT_BUTTON 0 // Boot Button Pin
 volatile bool bootPressed = false;
 volatile uint32_t lastInterrupt = 0;
 
-#define LED_BUILTIN 13 // Onboard LED Pin
+#define SMALL_LED 13 // Onboard LED Pin
+
+BME280 bme280;
+bool bme280_active = false;
+
+BNO08x bno086;
+bool bno086_active = false;
+
+SFE_MAX1704X lipo;
+bool lipo_active = false;
 
 AsyncWebServer server(80);
+AsyncEventSource events("/events");
 
 bool recording = false;
+#define PUBLISH_INTERVAL                                                       \
+  10 // Zeitintervall für die Veröffentlichung von Daten in Millisekunden
+uint32_t nextMicros;
+
+struct LogEntry {
+  uint32_t timestamp;                    // Zeitstempel der Aufnahme
+  float temp, hum, pres;                 // BME280 Messwerte
+  float yaw, pitch, roll;                // BNO08x Euler-Winkel in Grad
+  float linAccelX, linAccelY, linAccelZ; // BNO08x lineare Beschleunigung
+  float accelX, accelY, accelZ;          // BNO08x Beschleunigung
+  float soc, voltage;                    // MAX17048 Ladezustand und Spannung
+};
 
 void setupWebServer();
-void mountSDCard();
+void mountSD();
 void connectWifi();
 void listFilesRecursiveJson(File dir, File &outFile, const String &path);
 bool saveJsonListing(const char *outputPath);
+
+bool bme280Init() {
+  if (!bme280.begin()) {
+    Serial.println("BME280 initialisierung fehlgeschlagen!");
+    return false;
+  }
+  Serial.println("BME280 initialisiert");
+  return true;
+}
+
+bool bno086Init() {
+
+  if (BNO08x_EASY_MODE) {
+    Serial.print("Initialisiere BNO08x im easy Mode ...");
+    if (!bno086.begin()) {
+
+      Serial.println("BNO08x initialisierung fehlgeschlagen!");
+      return false;
+    }
+    Serial.println("BNO08x initialisiert im easy Mode");
+  } else {
+    Serial.print("Initialisiere BNO08x im advanced Mode ...");
+    pinMode(RST_PIN, OUTPUT);
+    digitalWrite(RST_PIN, LOW);
+    delay(10);
+    digitalWrite(RST_PIN, HIGH);
+    delay(500);
+
+    if (!bno086.begin(BNO08X_ADDR, Wire, INT_PIN, RST_PIN)) {
+      Serial.println("BNO08x initialisierung fehlgeschlagen!");
+      return false;
+    }
+  }
+
+  Serial.println("BNO08x initialisiert");
+
+  bno086.enableRotationVector(PUBLISH_INTERVAL);
+  Serial.println(" OK – RotationVector aktiviert");
+  bno086.enableAccelerometer(PUBLISH_INTERVAL);
+  Serial.println(" OK – Accelerometer aktiviert");
+  bno086.enableLinearAccelerometer(PUBLISH_INTERVAL);
+  Serial.println(" OK – LinearAccelerometer aktiviert");
+
+  return true;
+}
+
+bool lipoInit() {
+  if (!lipo.begin()) {
+    Serial.println("MAX17048 initialisierung fehlgeschlagen!");
+    return false;
+  }
+  Serial.println("MAX17048 initialisiert");
+
+  // Optional: QuickStart-Reset (force full recalibration)
+  lipo.quickStart();
+
+  return true;
+}
 
 void IRAM_ATTR onBootPress() {
   uint32_t now = millis();
@@ -53,37 +145,49 @@ void setup() {
   Serial.begin(115200);
 
   // ---- I2C initialisieren ----
-  Wire.begin(SDA, SCL, 400000); // Initialize I2C with custom pins
+  Wire.begin(SDA, SCL);
   Serial.println("I2C initialized");
 
   // ---- SPI initialisieren ----
-  SPI.begin(SCK, MISO, MOSI, SD_CS); // Initialize SPI with custom pins
+  SPI.begin(SCK, MISO, MOSI, SD_CS);
   Serial.println("SPI initialized");
 
-  connectWifi();                // WLAN verbinden
-  mountSDCard();                // SD-Karte mounten
-  setupWebServer();             // Webserver einrichten
-  pinMode(LED_BUILTIN, OUTPUT); // LED Pin als Output
-  pinMode(BOOT_BUTTON,
-          INPUT_PULLUP); // Boot Button Pin als Input mit Pull-Up Widerstand
-  attachInterrupt(digitalPinToInterrupt(BOOT_BUTTON), onBootPress,
-                  FALLING); // Interrupt für Boot Button
+  connectWifi();
+  mountSD();
+
+  bme280_active = bme280Init();
+  bno086_active = bno086Init();
+  lipo_active = lipoInit();
+
+  Serial.print("Ladezustand: ");
+  Serial.print(lipo.getSOC());
+  Serial.println("%");
+  Serial.print("Batteriespannung: ");
+  Serial.print(lipo.getVoltage());
+  Serial.println("V");
+
+  setupWebServer();
+
+  pinMode(SMALL_LED, OUTPUT);
+  pinMode(BOOT_BUTTON, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(BOOT_BUTTON), onBootPress, FALLING);
 }
 
 void connectWifi() {
   // Initialize WiFi
   WiFi.begin(SSID, PASSPHRASE);
+  Serial.print("\nConnecting to WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
     delay(1000);
-    Serial.println("Connecting to WiFi...");
+    Serial.print(".");
   }
 
-  Serial.println("Connected to WiFi");
+  Serial.println("\nConnected to WiFi");
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
 }
 
-void mountSDCard() {
+void mountSD() {
   Serial.print("SD-Karte initialisieren...");
   if (!SD.begin(SD_CS, SPI, 4000000)) {
     Serial.println(" FEHLER!");
@@ -178,7 +282,6 @@ void listFilesRecursiveJson(File dir, File &outFile, const String &path) {
   }
 }
 
-// Erstellt das JSON-Haupt-Array ohne versteckte Einträge
 bool saveJsonListing(const char *outputPath) {
   File root = SD.open("/");
   if (!root || !root.isDirectory()) {
@@ -201,9 +304,86 @@ bool saveJsonListing(const char *outputPath) {
 }
 
 void setupWebServer() {
+
+  server.addHandler(&events);
+
+  server.on("/list.json", HTTP_GET, [](AsyncWebServerRequest *request) {
+    saveJsonListing("/list.json");
+    request->send(SD, "/list.json", "application/json");
+  });
+
+  // ganz unten in setupWebServer():
+  server.on("/battery", HTTP_GET, [](AsyncWebServerRequest *request) {
+    // JSON zusammenbauen
+    String payload = "{";
+    payload += "\"soc\":" + String(lipo.getSOC(), 1) + ",";
+    payload += "\"voltage\":" + String(lipo.getVoltage(), 3) + ",";
+    payload += "\"changeRate\":" + String(lipo.getChangeRate(), 2) + ",";
+    payload += "\"alert\":" + String(lipo.getAlert()) + ",";
+    payload += "\"voltageHighAlert\":" + String(lipo.isVoltageHigh()) + ",";
+    payload += "\"voltageLowAlert\":" + String(lipo.isVoltageLow()) + ",";
+    payload += "\"emptyAlert\":" + String(lipo.isLow()) + ",";
+    payload += "\"soc1PercentChangeAlert\":" + String(lipo.isChange()) + ",";
+    payload += "\"hibernating\":" + String(lipo.isHibernating()); 
+    payload += "}";
+
+    request->send(200, "application/json", payload);
+  });
+
+  server.on(
+      "/upload", HTTP_POST,
+      [](AsyncWebServerRequest *request) {
+        request->send(200, "text/plain", "Upload abgeschlossen");
+      },
+      [](AsyncWebServerRequest *request, String filename, size_t index,
+         uint8_t *data, size_t len, bool final) {
+        static File uploadFile;
+
+        if (index == 0) {
+          String path = "/" + filename;
+          if (SD.exists(path))
+            SD.remove(path);
+          uploadFile = SD.open(path, FILE_WRITE);
+        }
+
+        if (uploadFile) {
+          uploadFile.write(data, len);
+        }
+
+        if (final && uploadFile) {
+          uploadFile.close();
+        }
+
+        saveJsonListing("/list.json");
+      });
+
+  server.on("/delete", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+    if (!request->hasParam("path")) {
+      return request->send(400, "text/plain", "Fehlender Parameter: path");
+    }
+    String path = request->getParam("path")->value();
+    if (!path.startsWith("/")) {
+      path = "/" + path;
+    }
+
+    if (SD.exists(path)) {
+      if (SD.remove(path)) {
+        saveJsonListing("/list.json");
+        request->send(200, "text/plain", "Datei gelöscht");
+      } else {
+        request->send(500, "text/plain", "Löschen fehlgeschlagen");
+      }
+    } else {
+      request->send(404, "text/plain", "Datei nicht gefunden");
+    }
+  });
+
   server.onNotFound([](AsyncWebServerRequest *request) {
     String path = request->url();
     printf("Anfrage für Pfad: %s\n", path.c_str());
+
+    saveJsonListing("/list.json");
+
     if (path == "/") {
       request->redirect(START_SIDE);
       return;
@@ -251,53 +431,221 @@ void setupWebServer() {
     }
   });
 
-  server.on("/list.json", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(SD, "/list.json", "application/json");
-  });
-
-  server.on(
-      "/upload", HTTP_POST,
-      [](AsyncWebServerRequest *request) {
-        saveJsonListing("/list.json");
-        request->send(200, "text/plain", "Upload abgeschlossen");
-      },
-      [](AsyncWebServerRequest *request, String filename, size_t index,
-         uint8_t *data, size_t len, bool final) {
-        static File uploadFile;
-
-        if (index == 0) {
-          String path = "/" + filename;
-          if (SD.exists(path))
-            SD.remove(path);
-          uploadFile = SD.open(path, FILE_WRITE);
-        }
-
-        if (uploadFile) {
-          uploadFile.write(data, len);
-        }
-
-        if (final && uploadFile) {
-          uploadFile.close();
-        }
-      });
-
   server.begin();
   Serial.println("Webserver gestartet");
 }
 
-void loop() {
+void record() {
 
+  LogEntry entry;
+  entry.timestamp = micros();
+  if (bme280_active) {
+    entry.temp = bme280.readTempC();
+    entry.hum = bme280.readFloatHumidity();
+    entry.pres = bme280.readFloatPressure() / 100.0; // Convert to hPa
+  } else {
+    entry.temp = entry.hum = entry.pres = 0.0;
+  }
+
+  entry.yaw = entry.pitch = entry.roll = 0.0f;
+  entry.accelX = entry.accelY = entry.accelZ = 0.0f;
+  entry.linAccelX = entry.linAccelY = entry.linAccelZ = 0.0f;
+
+  if (bno086_active) {
+    if (bno086.getSensorEvent()) {
+      uint8_t id = bno086.getSensorEventID();
+      switch (id) {
+
+      // Rotation
+      case SENSOR_REPORTID_ROTATION_VECTOR:
+      case SENSOR_REPORTID_GAME_ROTATION_VECTOR:
+        entry.yaw = bno086.getYaw() * RAD_TO_DEG;
+        entry.pitch = bno086.getPitch() * RAD_TO_DEG;
+        entry.roll = bno086.getRoll() * RAD_TO_DEG;
+        break;
+
+      // Roh-Beschleunigung (inkl. Gravitation)
+      case SENSOR_REPORTID_ACCELEROMETER:
+        entry.accelX = bno086.getAccelX();
+        entry.accelY = bno086.getAccelY();
+        entry.accelZ = bno086.getAccelZ();
+        break;
+
+      // Lineare Beschleunigung (ohne Gravitation)
+      case SENSOR_REPORTID_LINEAR_ACCELERATION:
+        entry.linAccelX = bno086.getLinAccelX();
+        entry.linAccelY = bno086.getLinAccelY();
+        entry.linAccelZ = bno086.getLinAccelZ();
+        break;
+
+      default:
+        // für andere Sensor-Typen ggf. ignorieren
+        break;
+      }
+    } else {
+      // Keine neuen Daten
+      entry.yaw = entry.pitch = entry.roll = 0.0f;
+      entry.accelX = entry.accelY = entry.accelZ = 0.0f;
+      entry.linAccelX = entry.linAccelY = entry.linAccelZ = 0.0f;
+    }
+  } else {
+    // Sensor inaktiv
+    entry.yaw = entry.pitch = entry.roll = 0.0f;
+    entry.accelX = entry.accelY = entry.accelZ = 0.0f;
+    entry.linAccelX = entry.linAccelY = entry.linAccelZ = 0.0f;
+  }
+
+  entry.yaw = entry.pitch = entry.roll = 0.0; // Keine Daten verfügbar
+
+  if (lipo_active) {
+    entry.soc = lipo.getSOC();
+    entry.voltage = lipo.getVoltage();
+  } else {
+    entry.soc = entry.voltage = 0.0;
+  }
+
+  if (recording) {
+    if (csvFile) {
+      csvFile.print(entry.timestamp);
+      csvFile.print(",");
+      csvFile.print(entry.temp);
+      csvFile.print(",");
+      csvFile.print(entry.hum);
+      csvFile.print(",");
+      csvFile.print(entry.pres);
+      csvFile.print(",");
+      csvFile.print(entry.yaw);
+      csvFile.print(",");
+      csvFile.print(entry.pitch);
+      csvFile.print(",");
+      csvFile.print(entry.roll);
+      csvFile.print(",");
+      csvFile.print(entry.linAccelX);
+      csvFile.print(",");
+      csvFile.print(entry.linAccelY);
+      csvFile.print(",");
+      csvFile.print(entry.linAccelZ);
+      csvFile.print(",");
+      csvFile.print(entry.accelX);
+      csvFile.print(",");
+      csvFile.print(entry.accelY);
+      csvFile.print(",");
+      csvFile.print(entry.accelZ);
+      csvFile.print(",");
+      csvFile.print(entry.soc);
+      csvFile.print(",");
+      csvFile.print(entry.voltage);
+      csvFile.println();
+      csvFile.flush(); // Daten sofort auf die SD-Karte schreiben
+    }
+  }
+}
+
+bool check_parachute() {
+
+  if (bme280_active) {
+    static float lastAltitude = 0.0;
+    float currentAltitude = bme280.readFloatAltitudeMeters();
+
+    if (lastAltitude == 0.0) {
+      lastAltitude = currentAltitude;
+    }
+
+    if (currentAltitude < lastAltitude - 1.0) {
+      lastAltitude = currentAltitude;
+      return true;
+    }
+
+    lastAltitude = currentAltitude;
+    return false;
+  }
+
+  return true;
+}
+
+void deploy_parachute() {
+  Serial.println("Fallschirm wird ausgelöst!");
+
+  // hier soll code für den Solanoid hin
+}
+
+void loop() {
   if (bootPressed) {
     Serial.println("BOOT-Button gedrückt!");
     recording = !recording; // Toggle recording state
     if (recording) {
       Serial.println("Aufnahme gestartet");
-      digitalWrite(LED_BUILTIN, HIGH); // LED einschalten
+      digitalWrite(SMALL_LED, HIGH); // LED einschalten
+
+      // irgendeine Magie die dafür sorgt, dass die neuste Datei den größten
+      // Index hat
+      uint16_t maxIndex = 0;
+      File root = SD.open("/");
+      while (true) {
+        File entry = root.openNextFile();
+        if (!entry)
+          break;
+
+        if (!entry.isDirectory()) {
+          const char *fullName = entry.name();
+          const char *fn = fullName[0] == '/' ? fullName + 1 : fullName;
+          if (strncmp(fn, "log_", 4) == 0 && strlen(fn) == 4 + 4 + 4 &&
+              fn[8] == '.' && tolower(fn[9]) == 'c' && tolower(fn[10]) == 's' &&
+              tolower(fn[11]) == 'v') {
+            char num[5] = {fn[4], fn[5], fn[6], fn[7], 0};
+            uint16_t idx = atoi(num);
+            if (idx > maxIndex)
+              maxIndex = idx;
+          }
+        }
+
+        entry.close();
+      }
+      root.close();
+
+      uint16_t newIndex = maxIndex + 1;
+      char filename[16];
+      sprintf(filename, "/log_%04d.csv", newIndex);
+      Serial.print("Erstelle neue Datei: ");
+      Serial.println(filename);
+
+      csvFile = SD.open(filename, FILE_WRITE);
+
+      csvFile.println("time_us,temp_C,hum_pct,press_hPa,yaw_deg,pitch_deg,roll_"
+                      "deg,linAccelX,linAccelY,linAccelZ,accelX,accelY,accelZ");
+      csvFile.flush();
+
+      // erstes Timing
+      nextMicros = micros() + PUBLISH_INTERVAL * 1000;
+
     } else {
       Serial.println("Aufnahme gestoppt");
-      digitalWrite(LED_BUILTIN, LOW); // LED einschalten
+      digitalWrite(SMALL_LED, LOW); // LED einschalten
+
+      events.send("update", "file-changed", millis());
+      if (csvFile) {
+        csvFile.close();
+        csvFile = File(); // Reset file handle
+      }
     }
     delay(50);
     bootPressed = false;
+  }
+
+  if (recording) {
+    uint32_t now = micros();
+    // prüfen, ob wir den nächsten 100 Hz-Zeitpunkt erreicht haben
+    if ((int32_t)(now - nextMicros) >= 0) {
+      // nächstes Zeitfenster buchen
+      nextMicros += PUBLISH_INTERVAL * 1000;
+
+      // Daten aufnehmen
+      record();
+
+      // Falls Schirm auslösen …
+      if (check_parachute()) {
+        deploy_parachute();
+      }
+    }
   }
 }

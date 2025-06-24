@@ -3,10 +3,28 @@ import os
 import requests
 import argparse
 
+# ---------------- Konfiguration ----------------
+# Basisnamen von Dateien, die _nicht_ hochgeladen werden sollen:
+SKIP_FILES = [
+    "secret.txt",
+    "config.json",
+    "dont_upload.bin",
+    "chart.js"
+]
+# ------------------------------------------------
+
 def upload_file(file_path: str, upload_url: str):
     """Lädt eine einzelne Datei zum ESP32 hoch."""
+    if not os.path.isfile(file_path):
+        print(f"✘ Datei nicht gefunden: {file_path}")
+        return
+    name = os.path.basename(file_path)
+    if name in SKIP_FILES:
+        print(f"→ Skip {name}")
+        return
+
     with open(file_path, 'rb') as f:
-        files = {'upload': (os.path.basename(file_path), f)}
+        files = {'upload': (name, f)}
         try:
             r = requests.post(upload_url, files=files, timeout=10)
             r.raise_for_status()
@@ -16,8 +34,8 @@ def upload_file(file_path: str, upload_url: str):
 
 def upload_folder(folder: str, upload_url: str, recursive: bool = False):
     """
-    Lädt alle Dateien im Ordner hoch, überspringt dabei .py-Dateien.
-    Optional werden Unterordner mit -r/--recursive mit hochgeladen.
+    Lädt alle Dateien im Ordner hoch, überspringt Dateien in SKIP_FILES
+    und optional Python-Skripte; Unterordner nur, wenn recursive=True.
     """
     for root, dirs, files in os.walk(folder):
         if not recursive:
@@ -27,6 +45,11 @@ def upload_folder(folder: str, upload_url: str, recursive: bool = False):
             # Python-Skripte überspringen
             if fname.lower().endswith('.py'):
                 continue
+            # Skip-Liste prüfen
+            if fname in SKIP_FILES:
+                print(f"→ Skip {os.path.join(root, fname)}")
+                continue
+
             full_path = os.path.join(root, fname)
             upload_file(full_path, upload_url)
 
@@ -46,17 +69,29 @@ def main():
         action="store_true",
         help="Unterordner mit hochladen"
     )
+    parser.add_argument(
+        "--files", "-f",
+        nargs="+",
+        help="Liste von Dateien, die hochgeladen werden sollen (anstatt ganzes Verzeichnis)"
+    )
     args = parser.parse_args()
 
     # Schema ergänzen, falls vergessen
     host = args.host
-    if not host.startswith("http://") and not host.startswith("https://"):
+    if not host.startswith(("http://", "https://")):
         host = "http://" + host
-
     upload_url = host.rstrip("/") + "/upload"
-    print(f"Starte Upload aller Dateien in '{script_dir}' → {upload_url}")
 
-    upload_folder(script_dir, upload_url, args.recursive)
+    print(f"Upload-Ziel: {upload_url}")
+
+    if args.files:
+        print("Lade diese Dateien hoch (Skip-Liste gilt auch hier):")
+        for fp in args.files:
+            upload_file(fp, upload_url)
+    else:
+        print(f"Starte Ordner-Upload aller Dateien in '{script_dir}'")
+        upload_folder(script_dir, upload_url, recursive=args.recursive)
+
     print("Fertig.")
 
 if __name__ == "__main__":

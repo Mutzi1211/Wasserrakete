@@ -9,28 +9,42 @@
       background-color: #f4f4f4;
       padding: 2em;
     }
-    ul { 
-      list-style: none; 
-      padding-left: 1em; 
-      border-left: 2px solid #ccc; 
+    ul {
+      list-style: none;
+      padding-left: 1em;
+      border-left: 2px solid #ccc;
     }
-    li { 
-      margin: 4px 0; 
+    li {
+      margin: 4px 0;
     }
-    .folder::before { 
-      content: "📁 "; 
+    .folder::before {
+      content: "📁 ";
     }
-    .file::before { 
-      content: "📄 "; 
+    .file::before {
+      content: ""; /* kein Default-Icon */
     }
-    .toggle { 
-      cursor: pointer; 
+    .toggle {
+      cursor: pointer;
     }
-    .hidden { 
-      display: none; 
+    .hidden {
+      display: none;
     }
-    form { 
-      margin-bottom: 2em; 
+    form {
+      margin-bottom: 2em;
+    }
+    /* Papierkorb-Icon */
+    .delete {
+      margin-right: 0.5em;
+      font-size: 1em;
+    }
+    .delete.enabled {
+      cursor: pointer;
+      color: #c00;
+    }
+    .delete.disabled {
+      color: #999;
+      cursor: default;
+      opacity: 0.5;
     }
   </style>
 </head>
@@ -45,7 +59,11 @@
   <div id="tree">Lade...</div>
 
   <script>
-    // Lädt den Verzeichnis-Baum von /list.json und baut ihn auf
+    // SSE-Verbindung (optional, neu laden on push)
+    const evtSource = new EventSource("/events");
+    evtSource.addEventListener("file-changed", () => location.reload());
+    evtSource.onerror = err => console.error("SSE-Error:", err);
+
     async function loadTree() {
       try {
         const res = await fetch("/list.json");
@@ -58,34 +76,53 @@
       }
     }
 
-    /**
-     * Baut rekursiv eine Baum-UL auf.
-     * @param {Array} data         Array von Einträgen { name, type, children? }
-     * @param {string} currentPath Relativer Pfad (endet mit '/' oder ist leer)
-     */
     function buildTree(data, currentPath) {
       const ul = document.createElement("ul");
-      for (const item of data) {
+      data.forEach(item => {
         const li = document.createElement("li");
         li.className = item.type;
-
         const itemPath = currentPath + item.name;
 
         if (item.type === "folder") {
-          // Ordner einklappbar machen
           const span = document.createElement("span");
           span.className = "toggle";
           span.textContent = item.name;
           span.onclick = () => childUl.classList.toggle("hidden");
           li.appendChild(span);
 
-          // Kinder rekursiv einbauen
-          const childUl = buildTree(item.children || [], itemPath + "/");
+          const childUl = buildTree(item.children||[], itemPath + "/");
           childUl.classList.add("hidden");
           li.appendChild(childUl);
 
         } else {
-          // Datei als Link
+          // Immer ein Trash-Icon anlegen
+          const del = document.createElement("span");
+          del.classList.add("delete");
+          del.textContent = "🗑️";
+
+          // Nur .csv-Dateien sind löschbar
+          const isCsv = item.name.toLowerCase().endsWith(".csv");
+          if (isCsv) {
+            del.classList.add("enabled");
+            del.title = "Löschen";
+            del.onclick = async () => {
+              try {
+                const res = await fetch('/delete?path='+encodeURIComponent(itemPath), {
+                  method: 'DELETE'
+                });
+                if (res.ok) location.reload();
+                else alert('❌ Löschen fehlgeschlagen');
+              } catch (err) {
+                alert('⚠️ Fehler: '+err.message);
+              }
+            };
+          } else {
+            del.classList.add("disabled");
+            del.title = "Nur .csv-Dateien können gelöscht werden";
+          }
+          li.appendChild(del);
+
+          // und der Link
           const a = document.createElement("a");
           a.href = "/" + itemPath;
           a.textContent = item.name;
@@ -94,38 +131,27 @@
         }
 
         ul.appendChild(li);
-      }
+      });
       return ul;
     }
 
-    // Upload-Formular per JavaScript abfangen
-    document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+    // Upload-Formular abfangen
+    document.getElementById('uploadForm').addEventListener('submit', async e => {
       e.preventDefault();
       const input = document.getElementById('fileInput');
       if (!input.files.length) return;
-
       const formData = new FormData();
       formData.append('upload', input.files[0]);
-
       try {
-        const res = await fetch('/upload', {
-          method: 'POST',
-          body: formData
-        });
-
-        if (res.ok) {
-          alert('✅ Upload erfolgreich!');
-          input.value = '';
-          loadTree(); // Baum frisch laden
-        } else {
-          alert('❌ Upload fehlgeschlagen: ' + res.statusText);
-        }
+        const res = await fetch('/upload',{ method:'POST', body:formData });
+        if (res.ok) location.reload();
+        else alert('❌ Upload fehlgeschlagen: '+res.statusText);
       } catch (err) {
-        alert('⚠️ Fehler beim Upload: ' + err.message);
+        alert('⚠️ Fehler beim Upload: '+err.message);
       }
     });
 
-    // Beim ersten Laden der Seite
+    // initial
     loadTree();
   </script>
 </body>
