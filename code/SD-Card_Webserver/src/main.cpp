@@ -56,8 +56,7 @@ AsyncWebServer server(80);
 AsyncEventSource events("/events");
 
 bool recording = false;
-#define PUBLISH_INTERVAL                                                       \
-  10 // Zeitintervall für die Veröffentlichung von Daten in Millisekunden
+#define PUBLISH_INTERVAL 100 // Zeitintervall für die Veröffentlichung von Daten in Millisekunden
 uint32_t nextMicros;
 
 struct LogEntry {
@@ -129,6 +128,107 @@ bool lipoInit() {
 
   // Optional: QuickStart-Reset (force full recalibration)
   lipo.quickStart();
+  // Read and print the reset indicator
+  Serial.print(F("Reset Indicator was: "));
+  bool RI = lipo.isReset(true); // Read the RI flag and clear it automatically if it is set
+  Serial.println(RI); // Print the RI
+  // If RI was set, check it is now clear
+  if (RI)
+  {
+    Serial.print(F("Reset Indicator is now: "));
+    RI = lipo.isReset(); // Read the RI flag
+    Serial.println(RI); // Print the RI    
+  }
+
+  // To quick-start or not to quick-start? That is the question!
+  // Read the following and then decide if you do want to quick-start the fuel gauge.
+  // "Most systems should not use quick-start because the ICs handle most startup problems transparently,
+  //  such as intermittent battery-terminal connection during insertion. If battery voltage stabilizes
+  //  faster than 17ms then do not use quick-start. The quick-start command restarts fuel-gauge calculations
+  //  in the same manner as initial power-up of the IC. If the system power-up sequence is so noisy that the
+  //  initial estimate of SOC has unacceptable error, the system microcontroller might be able to reduce the
+  //  error by using quick-start."
+  // If you still want to try a quick-start then uncomment the next line:
+	//lipo.quickStart();
+
+  // Read and print the device ID
+  Serial.print(F("Device ID: 0x"));
+  uint8_t id = lipo.getID(); // Read the device ID
+  if (id < 0x10) Serial.print(F("0")); // Print the leading zero if required
+  Serial.println(id, HEX); // Print the ID as hexadecimal
+
+  // Read and print the device version
+  Serial.print(F("Device version: 0x"));
+  uint8_t ver = lipo.getVersion(); // Read the device version
+  if (ver < 0x10) Serial.print(F("0")); // Print the leading zero if required
+  Serial.println(ver, HEX); // Print the version as hexadecimal
+
+  // Read and print the battery threshold
+  Serial.print(F("Battery empty threshold is currently: "));
+  Serial.print(lipo.getThreshold());
+  Serial.println(F("%"));
+
+	// We can set an interrupt to alert when the battery SoC gets too low.
+	// We can alert at anywhere between 1% and 32%:
+	lipo.setThreshold(20); // Set alert threshold to 20%.
+
+  // Read and print the battery empty threshold
+  Serial.print(F("Battery empty threshold is now: "));
+  Serial.print(lipo.getThreshold());
+  Serial.println(F("%"));
+
+  // Read and print the high voltage threshold
+  Serial.print(F("High voltage threshold is currently: "));
+  float highVoltage = ((float)lipo.getVALRTMax()) * 0.02; // 1 LSb is 20mV. Convert to Volts.
+  Serial.print(highVoltage, 2);
+  Serial.println(F("V"));
+
+  // Set the high voltage threshold
+  lipo.setVALRTMax((float)4.1); // Set high voltage threshold (Volts)
+
+  // Read and print the high voltage threshold
+  Serial.print(F("High voltage threshold is now: "));
+  highVoltage = ((float)lipo.getVALRTMax()) * 0.02; // 1 LSb is 20mV. Convert to Volts.
+  Serial.print(highVoltage, 2);
+  Serial.println(F("V"));
+
+  // Read and print the low voltage threshold
+  Serial.print(F("Low voltage threshold is currently: "));
+  float lowVoltage = ((float)lipo.getVALRTMin()) * 0.02; // 1 LSb is 20mV. Convert to Volts.
+  Serial.print(lowVoltage, 2);
+  Serial.println(F("V"));
+
+  // Set the low voltage threshold
+  lipo.setVALRTMin((float)3.9); // Set low voltage threshold (Volts)
+
+  // Read and print the low voltage threshold
+  Serial.print(F("Low voltage threshold is now: "));
+  lowVoltage = ((float)lipo.getVALRTMin()) * 0.02; // 1 LSb is 20mV. Convert to Volts.
+  Serial.print(lowVoltage, 2);
+  Serial.println(F("V"));
+
+  // Enable the State Of Change alert
+  Serial.print(F("Enabling the 1% State Of Change alert: "));
+  if (lipo.enableSOCAlert())
+  {
+    Serial.println(F("success."));
+  }
+  else
+  {
+    Serial.println(F("FAILED!"));
+  }
+  
+  // Read and print the HIBRT Active Threshold
+  Serial.print(F("Hibernate active threshold is: "));
+  float actThr = ((float)lipo.getHIBRTActThr()) * 0.00125; // 1 LSb is 1.25mV. Convert to Volts.
+  Serial.print(actThr, 5);
+  Serial.println(F("V"));
+
+  // Read and print the HIBRT Hibernate Threshold
+  Serial.print(F("Hibernate hibernate threshold is: "));
+  float hibThr = ((float)lipo.getHIBRTHibThr()) * 0.208; // 1 LSb is 0.208%/hr. Convert to %/hr.
+  Serial.print(hibThr, 3);
+  Serial.println(F("%/h"));
 
   return true;
 }
@@ -158,13 +258,6 @@ void setup() {
   bme280_active = bme280Init();
   bno086_active = bno086Init();
   lipo_active = lipoInit();
-
-  Serial.print("Ladezustand: ");
-  Serial.print(lipo.getSOC());
-  Serial.println("%");
-  Serial.print("Batteriespannung: ");
-  Serial.print(lipo.getVoltage());
-  Serial.println("V");
 
   setupWebServer();
 
@@ -324,8 +417,14 @@ void setupWebServer() {
     payload += "\"voltageLowAlert\":" + String(lipo.isVoltageLow()) + ",";
     payload += "\"emptyAlert\":" + String(lipo.isLow()) + ",";
     payload += "\"soc1PercentChangeAlert\":" + String(lipo.isChange()) + ",";
-    payload += "\"hibernating\":" + String(lipo.isHibernating()); 
+    payload += "\"hibernating\":" + String(lipo.isHibernating());
     payload += "}";
+
+    File jsonFile = SD.open("/battery.json", FILE_WRITE);
+    if (jsonFile) {
+      jsonFile.print(payload);
+      jsonFile.close();
+    }
 
     request->send(200, "application/json", payload);
   });
@@ -611,8 +710,7 @@ void loop() {
 
       csvFile = SD.open(filename, FILE_WRITE);
 
-      csvFile.println("time_us,temp_C,hum_pct,press_hPa,yaw_deg,pitch_deg,roll_"
-                      "deg,linAccelX,linAccelY,linAccelZ,accelX,accelY,accelZ");
+      csvFile.println("time_us,temp_C,hum_pct,press_hPa,yaw_deg,pitch_deg,roll_deg,linAccelX,linAccelY,linAccelZ,accelX,accelY,accelZ,soc_pct,voltage_V");
       csvFile.flush();
 
       // erstes Timing
