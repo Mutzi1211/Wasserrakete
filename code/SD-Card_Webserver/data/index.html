@@ -8,7 +8,29 @@
       font-family: sans-serif;
       background-color: #f4f4f4;
       padding: 2em;
+      position: relative; /* für absolute Positionierung der Akkuanzeige */
     }
+    /* Akkuanzeige oben rechts */
+    #battery {
+      position: absolute;
+      top: 1em;
+      right: 1em;
+      background: #fff;
+      padding: 0.5em 1em;
+      border-radius: 4px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+      font-size: 0.9em;
+      display: flex;
+      align-items: center;
+      gap: 0.5em;
+    }
+    #battery.charging::before {
+      content: "🔌";
+    }
+    #battery.not-charging::before {
+      content: "🔋";
+    }
+
     ul {
       list-style: none;
       padding-left: 1em;
@@ -49,6 +71,12 @@
   </style>
 </head>
 <body>
+  <!-- Akkuanzeige -->
+  <div id="battery" class="not-charging">
+    <span id="battery-soc">-- %</span>
+    <span id="battery-voltage">-- V</span>
+  </div>
+
   <h2>📤 Datei hochladen</h2>
   <form id="uploadForm" enctype="multipart/form-data">
     <input type="file" name="upload" id="fileInput" required>
@@ -95,12 +123,10 @@
           li.appendChild(childUl);
 
         } else {
-          // Immer ein Trash-Icon anlegen
           const del = document.createElement("span");
           del.classList.add("delete");
           del.textContent = "🗑️";
 
-          // Nur .csv-Dateien sind löschbar
           const isCsv = item.name.toLowerCase().endsWith(".csv");
           if (isCsv) {
             del.classList.add("enabled");
@@ -122,7 +148,6 @@
           }
           li.appendChild(del);
 
-          // und der Link
           const a = document.createElement("a");
           a.href = "/" + itemPath;
           a.textContent = item.name;
@@ -151,8 +176,34 @@
       }
     });
 
+    // Batterie-Daten von /battery abfragen und anzeigen
+    async function updateBattery() {
+      try {
+        const res = await fetch('/battery');
+        if (!res.ok) throw new Error(res.statusText);
+        const batt = await res.json();
+        // SOC und Spannung aktualisieren
+        document.getElementById('battery-soc').textContent     = batt.soc.toFixed(1) + ' %';
+        document.getElementById('battery-voltage').textContent = batt.voltage.toFixed(3) + ' V';
+        // Ladezustand (charging) klassenbasiert
+        const div = document.getElementById('battery');
+        if (batt.charging) {
+          div.classList.add('charging');
+          div.classList.remove('not-charging');
+        } else {
+          div.classList.add('not-charging');
+          div.classList.remove('charging');
+        }
+      } catch (err) {
+        console.error('Battery fetch error:', err);
+      }
+    }
+
     // initial
     loadTree();
+    updateBattery();
+    // alle 10 Sekunden aktualisieren
+    setInterval(updateBattery, 10000);
   </script>
 </body>
 </html>
