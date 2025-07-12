@@ -3,6 +3,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_Sensor.h>
+
 #include <Arduino.h>
 #include <AsyncEventSource.h>
 #include <AsyncTCP.h>
@@ -15,9 +16,17 @@
 #include <WiFi.h>
 #include <Wire.h>
 
+// // WLAN
+// #define SSID "UniFi"
+// #define PASSPHRASE "lassmichbitterein"
+
 // WLAN
-#define SSID "UniFi"
-#define PASSPHRASE "lassmichbitterein"
+#define SSID "THAir"
+#define PASSPHRASE "RoboterUSG1!"
+
+// WLAN AP
+#define SSID_AP "ESP32"
+#define PASSPHRASE_AP "12345678"
 
 // Webserver
 #define START_SIDE "/index.html"
@@ -50,6 +59,8 @@ volatile uint32_t lastInterrupt = 0;
 
 BME280 bme280;
 bool bme280_active = false;
+float max_altitude = 0.0f;
+float min_altitude = 3000.0f;
 
 Adafruit_BNO08x bno086;
 bool bno086_active = false;
@@ -62,6 +73,9 @@ AsyncEventSource events("/events");
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 bool oled_active = false;
+
+bool parachute_deployed = false;
+int last_parachute = 0;
 
 // 8×8 WLAN-Icon (monochrom)
 static const unsigned char wifi_icon[] PROGMEM = {
@@ -82,8 +96,6 @@ bool recording = false;
   100 // Zeitintervall für die Veröffentlichung von Daten in Millisekunden
 uint32_t nextMicros;
 
-float lastAltitude = 0.0;
-
 struct LogEntry {
   uint32_t timestamp;                    // Zeitstempel der Aufnahme
   float temp, hum, pres;                 // BME280 Messwerte
@@ -92,6 +104,14 @@ struct LogEntry {
   float accelX, accelY, accelZ;          // BNO08x Beschleunigung
   float soc, voltage;                    // MAX17048 Ladezustand und Spannung
 };
+
+// Servo parameters and LEDC configuration
+const int servoPin = 15;     // GPIO15
+const int freq = 50;         // 50 Hz for servos
+const int channel = 0;       // LEDC channel 0
+const int resolution = 16;   // 16-bit resolution
+const int minPulseUs = 500;  // Minimum pulse width in microseconds
+const int maxPulseUs = 2400; // Maximum pulse width in microseconds
 
 void setupWebServer();
 void mountSD();
@@ -118,7 +138,7 @@ bool bno086Init() {
   }
   Serial.println("OK – BNO08x initialisiert");
 
- uint32_t iu = PUBLISH_INTERVAL * 1000UL; // 100 ms → 100000 µs
+  uint32_t iu = PUBLISH_INTERVAL * 1000UL; // 100 ms → 100000 µs
 
   // Nur Game Rotation Vector (0x08)
   if (!bno086.enableReport(SH2_GAME_ROTATION_VECTOR, iu))
@@ -127,7 +147,7 @@ bool bno086Init() {
     Serial.println(" OK – GameRotationVector aktiviert");
 
   // Roh-Beschl. (0x01)
-  if (!bno086.enableReport(SH2_ACCELEROMETER,       iu))
+  if (!bno086.enableReport(SH2_ACCELEROMETER, iu))
     Serial.println("FEHLER: Accelerometer nicht aktivierbar");
   else
     Serial.println(" OK – Accelerometer aktiviert");
@@ -186,27 +206,25 @@ void show_display(String text) {
   // Text oder Akkustand/Höhe
   display.setTextSize(2);
   display.setCursor(0, 0);
-  if (!WiFi.status() == WL_CONNECTED && !recording) {
-    // Nur Text anzeigen
+  if (text != "") {
     display.print(text);
-  } else if (recording) {
-    // im Recording-Modus zusätzlich Text
-    display.print(text);
-    display.print("Recording \n");
   } else {
-    // ansonsten Akku und Höhe abwechselnd
-    static unsigned long lastSwitch = 0;
-    static bool showBattery = true;
-    if (millis() - lastSwitch > 2000) {
-      showBattery = !showBattery;
-      lastSwitch = millis();
-    }
-    if (showBattery)
-      display.print("Bat: \n" + String(lipo.getSOC()) + "%");
-    else
-      display.printf("Alt: %dm", lastAltitude);
+    display.print("Bat: \n" + String(lipo.getSOC()) + "%");
   }
+
   display.display();
+}
+
+uint32_t pulseUsToDuty(int pulse_us) {
+  // duty = (pulse_us / (1e6 / freq)) * (2^resolution)
+  float periodUs = 1e6 / freq;
+  float dutyFraction = pulse_us / periodUs;
+  return (uint32_t)(dutyFraction * ((1 << resolution) - 1));
+}
+
+void initServo() {
+  ledcSetup(channel, freq, resolution);
+  ledcAttachPin(servoPin, channel);
 }
 
 void IRAM_ATTR onBootPress() {
@@ -230,35 +248,55 @@ void setup() {
   SPI.begin(SCK, MISO, MOSI, SD_CS);
   Serial.println("SPI initialized");
 
-  connectWifi();
-
-  mountSD();
-
   bme280_active = bme280Init();
 
   bno086_active = bno086Init();
 
   lipo_active = lipoInit();
 
+  show_display("");
+
+  initServo();
+
+  connectWifi();
+
+  mountSD();
+
   setupWebServer();
 
   pinMode(SMALL_LED, OUTPUT);
   pinMode(BOOT_BUTTON, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(BOOT_BUTTON), onBootPress, FALLING);
+
+  bootPressed = true;
+  show_display("Launch -> ");
 }
 
 void connectWifi() {
   // Initialize WiFi
   WiFi.begin(SSID, PASSPHRASE);
   Serial.print("\nConnecting to WiFi...");
-  while (WiFi.status() != WL_CONNECTED) {
+
+  for (int i = 0; i < 5; i++) {
     delay(1000);
     Serial.print(".");
   }
 
-  Serial.println("\nConnected to WiFi");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
+  if (WiFi.status() != WL_CONNECTED) {
+
+    Serial.println("FEHLER: WiFi nicht verbunden");
+
+    WiFi.softAP(SSID_AP, PASSPHRASE_AP);
+    Serial.println("Own AP started");
+
+    return;
+
+  } else {
+
+    Serial.println("\nConnected to WiFi");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+  }
 }
 
 void mountSD() {
@@ -515,6 +553,15 @@ void setupWebServer() {
   Serial.println("Webserver gestartet");
 }
 
+void setServoAngle(int angle) {
+  // Constrain angle 0-180
+  angle = constrain(angle, 0, 180);
+  // Map angle to pulse width
+  int pulse = map(angle, 0, 180, minPulseUs, maxPulseUs);
+  uint32_t duty = pulseUsToDuty(pulse);
+  ledcWrite(channel, duty);
+}
+
 void record() {
   LogEntry entry;
   entry.timestamp = micros();
@@ -538,31 +585,33 @@ void record() {
     // FIFO‐Leeren und Daten übernehmen
     while (bno086.getSensorEvent(&sv)) {
       switch (sv.sensorId) {
-        case SH2_GAME_ROTATION_VECTOR: {
-          // Quaternion → Euler
-          float qi = sv.un.gameRotationVector.i;
-          float qj = sv.un.gameRotationVector.j;
-          float qk = sv.un.gameRotationVector.k;
-          float qw = sv.un.gameRotationVector.real;
-          entry.yaw   = atan2f(2*(qw*qk + qi*qj),
-                               1 - 2*(qj*qj + qk*qk)) * 180.0f / M_PI;
-          entry.pitch = asinf (2*(qw*qj - qk*qi))       * 180.0f / M_PI;
-          entry.roll  = atan2f(2*(qw*qi + qj*qk),
-                               1 - 2*(qi*qi + qj*qj)) * 180.0f / M_PI;
-          break;
-        }
-        case SH2_ACCELEROMETER:
-          entry.accelX = sv.un.accelerometer.x;
-          entry.accelY = sv.un.accelerometer.y;
-          entry.accelZ = sv.un.accelerometer.z;
-          break;
-        case SH2_LINEAR_ACCELERATION:
-          entry.linAccelX = sv.un.linearAcceleration.x;
-          entry.linAccelY = sv.un.linearAcceleration.y;
-          entry.linAccelZ = sv.un.linearAcceleration.z;
-          break;
-        default:
-          break;
+      case SH2_GAME_ROTATION_VECTOR: {
+        // Quaternion → Euler
+        float qi = sv.un.gameRotationVector.i;
+        float qj = sv.un.gameRotationVector.j;
+        float qk = sv.un.gameRotationVector.k;
+        float qw = sv.un.gameRotationVector.real;
+        entry.yaw =
+            atan2f(2 * (qw * qk + qi * qj), 1 - 2 * (qj * qj + qk * qk)) *
+            180.0f / M_PI;
+        entry.pitch = asinf(2 * (qw * qj - qk * qi)) * 180.0f / M_PI;
+        entry.roll =
+            atan2f(2 * (qw * qi + qj * qk), 1 - 2 * (qi * qi + qj * qj)) *
+            180.0f / M_PI;
+        break;
+      }
+      case SH2_ACCELEROMETER:
+        entry.accelX = sv.un.accelerometer.x;
+        entry.accelY = sv.un.accelerometer.y;
+        entry.accelZ = sv.un.accelerometer.z;
+        break;
+      case SH2_LINEAR_ACCELERATION:
+        entry.linAccelX = sv.un.linearAcceleration.x;
+        entry.linAccelY = sv.un.linearAcceleration.y;
+        entry.linAccelZ = sv.un.linearAcceleration.z;
+        break;
+      default:
+        break;
       }
     }
   }
@@ -614,36 +663,45 @@ void record() {
 bool check_parachute() {
 
   if (bme280_active) {
-    static float lastAltitude = 0.0;
-    float currentAltitude = bme280.readFloatAltitudeMeters();
 
-    if (lastAltitude == 0.0) {
-      lastAltitude = currentAltitude;
+    float pressure = bme280.readFloatPressure();
+    float altitude = bme280.readFloatAltitudeMeters();
+
+    // Serial.println("Altitude: " + String(altitude) + "m");
+    // Serial.println("Max Altitude: " + String(max_altitude) + "m");
+
+    if (altitude < min_altitude) {
+      min_altitude = altitude;
     }
 
-    if (currentAltitude < lastAltitude - 1.0) {
-      lastAltitude = currentAltitude;
+    if (altitude > max_altitude) {
+      max_altitude = altitude;
+      return false;
+    }
+
+    if (altitude < max_altitude - 2) {
       return true;
     }
-
-    lastAltitude = currentAltitude;
-    return false;
   }
-
-  return true;
+  return false;
 }
 
 void deploy_parachute() {
   Serial.println("Fallschirm wird ausgelöst!");
+  // Center
+  setServoAngle(90);
+  Serial.println("Angle: 90°");
+  delay(1000);
+  // Left
+  setServoAngle(30);
+  Serial.println("Angle: 0°");
+  delay(1000);
+  // Back to center
 
-  // hier soll code für den Solanoid hin
+  parachute_deployed = true;
 }
 
 void loop() {
-
-  if (lipo_active) {
-    show_display("");
-  }
 
   if (bootPressed) {
     Serial.println("BOOT-Button gedrückt!");
@@ -708,6 +766,16 @@ void loop() {
     bootPressed = false;
   }
 
+  if (parachute_deployed) {
+    if (millis() - last_parachute > 10000) {
+      parachute_deployed = false;
+      max_altitude = 0;
+      min_altitude = 1000;
+      Serial.println("Fallschirm zurückgesetzt");
+      show_display("Launch ->");
+    }
+  }
+
   if (recording) {
     uint32_t now = micros();
     // prüfen, ob wir den nächsten 100 Hz-Zeitpunkt erreicht haben
@@ -720,7 +788,12 @@ void loop() {
 
       // Falls Schirm auslösen …
       if (check_parachute()) {
-        deploy_parachute();
+        if (!parachute_deployed) {
+          deploy_parachute();
+          last_parachute = millis();
+          float height = max_altitude - min_altitude;
+          show_display("Hoehe: \n" + String(height));
+        }
       }
     }
   }
