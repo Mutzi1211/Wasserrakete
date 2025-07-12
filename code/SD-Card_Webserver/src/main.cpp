@@ -4,6 +4,7 @@
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_Sensor.h>
 
+#include "ICM_20948.h"
 #include <Arduino.h>
 #include <AsyncEventSource.h>
 #include <AsyncTCP.h>
@@ -62,8 +63,8 @@ bool bme280_active = false;
 float max_altitude = 0.0f;
 float min_altitude = 3000.0f;
 
-Adafruit_BNO08x bno086;
-bool bno086_active = false;
+ICM_20948_I2C icm; // I2C Objekt
+bool icm_active = false;
 
 SFE_MAX1704X lipo;
 bool lipo_active = false;
@@ -98,7 +99,7 @@ uint32_t nextMicros;
 
 struct LogEntry {
   uint32_t timestamp;                    // Zeitstempel der Aufnahme
-  float temp, hum, pres;                 // BME280 Messwerte
+  float temp, hum, pres, altitude;       // BME280 Messwerte
   float yaw, pitch, roll;                // BNO08x Euler-Winkel in Grad
   float linAccelX, linAccelY, linAccelZ; // BNO08x lineare Beschleunigung
   float accelX, accelY, accelZ;          // BNO08x Beschleunigung
@@ -128,36 +129,11 @@ bool bme280Init() {
   return true;
 }
 
-bool bno086Init() {
-  Serial.print("Initialisiere BNO08x ...");
+bool initICM() {
+  if (icm.begin()) {
 
-  // I²C-Init (alternativ: begin_SPI(...))
-  if (!bno086.begin_I2C(BNO08X_ADDR, &Wire)) {
-    Serial.println("FEHLER: BNO08x init auf I2C fehlgeschlagen!");
     return false;
   }
-  Serial.println("OK – BNO08x initialisiert");
-
-  uint32_t iu = PUBLISH_INTERVAL * 1000UL; // 100 ms → 100000 µs
-
-  // Nur Game Rotation Vector (0x08)
-  if (!bno086.enableReport(SH2_GAME_ROTATION_VECTOR, iu))
-    Serial.println("FEHLER: GameRotVec nicht aktivierbar");
-  else
-    Serial.println(" OK – GameRotationVector aktiviert");
-
-  // Roh-Beschl. (0x01)
-  if (!bno086.enableReport(SH2_ACCELEROMETER, iu))
-    Serial.println("FEHLER: Accelerometer nicht aktivierbar");
-  else
-    Serial.println(" OK – Accelerometer aktiviert");
-
-  // Lineare Beschl. (0x04)
-  if (!bno086.enableReport(SH2_LINEAR_ACCELERATION, iu))
-    Serial.println("FEHLER: LinearAccel nicht aktivierbar");
-  else
-    Serial.println(" OK – LinearAccelerometer aktiviert");
-
   return true;
 }
 
@@ -225,6 +201,7 @@ uint32_t pulseUsToDuty(int pulse_us) {
 void initServo() {
   ledcSetup(channel, freq, resolution);
   ledcAttachPin(servoPin, channel);
+
 }
 
 void IRAM_ATTR onBootPress() {
@@ -250,7 +227,7 @@ void setup() {
 
   bme280_active = bme280Init();
 
-  bno086_active = bno086Init();
+  icm_active = initICM();
 
   lipo_active = lipoInit();
 
@@ -258,11 +235,11 @@ void setup() {
 
   initServo();
 
-  connectWifi();
+  // connectWifi();
 
   mountSD();
 
-  setupWebServer();
+  // setupWebServer();
 
   pinMode(SMALL_LED, OUTPUT);
   pinMode(BOOT_BUTTON, INPUT_PULLUP);
@@ -562,6 +539,18 @@ void setServoAngle(int angle) {
   ledcWrite(channel, duty);
 }
 
+void quaternionToEuler(float q0, float q1, float q2, float q3, float &roll,
+                       float &pitch, float &yaw) {
+  roll = atan2(2.0f * (q0 * q1 + q2 * q3), 1.0f - 2.0f * (q1 * q1 + q2 * q2));
+  pitch = asin(2.0f * (q0 * q2 - q3 * q1));
+  yaw = atan2(2.0f * (q0 * q3 + q1 * q2), 1.0f - 2.0f * (q2 * q2 + q3 * q3));
+
+  // Umrechnen in Grad
+  roll *= 180.0f / PI;
+  pitch *= 180.0f / PI;
+  yaw *= 180.0f / PI;
+}
+
 void record() {
   LogEntry entry;
   entry.timestamp = micros();
@@ -571,57 +560,18 @@ void record() {
     entry.temp = bme280.readTempC();
     entry.hum = bme280.readFloatHumidity();
     entry.pres = bme280.readFloatPressure() / 100.0; // hPa
+    entry.altitude = bme280.readFloatAltitudeMeters();
   } else {
     entry.temp = entry.hum = entry.pres = 0.0f;
   }
 
-  // Default-Werte, falls nichts kommt
-  entry.yaw = entry.pitch = entry.roll = 0.0f;
-  entry.accelX = entry.accelY = entry.accelZ = 0.0f;
-  entry.linAccelX = entry.linAccelY = entry.linAccelZ = 0.0f;
+  // ICM-20948
+  if (icm_active && icm.dataReady()) {
 
-  if (bno086_active) {
-    sh2_SensorValue_t sv;
-    // FIFO‐Leeren und Daten übernehmen
-    while (bno086.getSensorEvent(&sv)) {
-      switch (sv.sensorId) {
-      case SH2_GAME_ROTATION_VECTOR: {
-        // Quaternion → Euler
-        float qi = sv.un.gameRotationVector.i;
-        float qj = sv.un.gameRotationVector.j;
-        float qk = sv.un.gameRotationVector.k;
-        float qw = sv.un.gameRotationVector.real;
-        entry.yaw =
-            atan2f(2 * (qw * qk + qi * qj), 1 - 2 * (qj * qj + qk * qk)) *
-            180.0f / M_PI;
-        entry.pitch = asinf(2 * (qw * qj - qk * qi)) * 180.0f / M_PI;
-        entry.roll =
-            atan2f(2 * (qw * qi + qj * qk), 1 - 2 * (qi * qi + qj * qj)) *
-            180.0f / M_PI;
-        break;
-      }
-      case SH2_ACCELEROMETER:
-        entry.accelX = sv.un.accelerometer.x;
-        entry.accelY = sv.un.accelerometer.y;
-        entry.accelZ = sv.un.accelerometer.z;
-        break;
-      case SH2_LINEAR_ACCELERATION:
-        entry.linAccelX = sv.un.linearAcceleration.x;
-        entry.linAccelY = sv.un.linearAcceleration.y;
-        entry.linAccelZ = sv.un.linearAcceleration.z;
-        break;
-      default:
-        break;
-      }
-    }
-  }
-
-  // LiPo
-  if (lipo_active) {
-    entry.soc = lipo.getSOC();
-    entry.voltage = lipo.getVoltage();
-  } else {
-    entry.soc = entry.voltage = 0.0f;
+    icm.getAGMT(); // wichtige Funktion!
+    entry.accelX = icm.accX();
+    entry.accelY = icm.accY();
+    entry.accelZ = icm.accZ();
   }
 
   // Ins CSV schreiben
@@ -634,25 +584,13 @@ void record() {
     csvFile.print(',');
     csvFile.print(entry.pres);
     csvFile.print(',');
-    csvFile.print(entry.yaw);
-    csvFile.print(',');
-    csvFile.print(entry.pitch);
-    csvFile.print(',');
-    csvFile.print(entry.roll);
-    csvFile.print(',');
-    csvFile.print(entry.linAccelX);
-    csvFile.print(',');
-    csvFile.print(entry.linAccelY);
-    csvFile.print(',');
-    csvFile.print(entry.linAccelZ);
+    csvFile.print(entry.altitude);
     csvFile.print(',');
     csvFile.print(entry.accelX);
     csvFile.print(',');
     csvFile.print(entry.accelY);
     csvFile.print(',');
     csvFile.print(entry.accelZ);
-    csvFile.print(',');
-    csvFile.print(entry.soc);
     csvFile.print(',');
     csvFile.print(entry.voltage);
     csvFile.println();
@@ -661,6 +599,24 @@ void record() {
 }
 
 bool check_parachute() {
+
+  bool zeroG = false;
+
+  if (icm_active) {
+    icm.getAGMT(); // wichtige Funktion!
+    float x, y, z;
+
+    x = icm.accX();
+    y = icm.accY();
+    z = icm.accZ();
+
+
+    if (z < 200) {
+      zeroG = true;
+    } else {
+      zeroG = false;
+    }
+  }
 
   if (bme280_active) {
 
@@ -679,7 +635,7 @@ bool check_parachute() {
       return false;
     }
 
-    if (altitude < max_altitude - 2) {
+    if (zeroG && altitude < max_altitude - 0.1) {
       return true;
     }
   }
@@ -702,7 +658,6 @@ void deploy_parachute() {
 }
 
 void loop() {
-
   if (bootPressed) {
     Serial.println("BOOT-Button gedrückt!");
     recording = !recording; // Toggle recording state
@@ -744,9 +699,8 @@ void loop() {
 
       csvFile = SD.open(filename, FILE_WRITE);
 
-      csvFile.println("time_us,temp_C,hum_pct,press_hPa,yaw_deg,pitch_deg,roll_"
-                      "deg,linAccelX,linAccelY,linAccelZ,accelX,accelY,accelZ,"
-                      "soc_pct,voltage_V");
+      csvFile.println("time_us,temp_C,hum_pct,press_hPa,altitude_m,accelX,"
+                      "accelY,accelZ,voltage_V");
       csvFile.flush();
 
       // erstes Timing

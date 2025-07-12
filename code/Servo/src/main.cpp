@@ -36,18 +36,11 @@ void setServoAngle(int angle) {
 
 void loop() {
     // Center
-    setServoAngle(90);
+    setServoAngle(45);
     Serial.println("Angle: 90°"); delay(1000);
     // Left
-    setServoAngle(0);
+    setServoAngle(90);
     Serial.println("Angle: 0°"); delay(1000);
     // Back to center
-    setServoAngle(90);
-    Serial.println("Angle: 90°"); delay(1000);
-    // Right
-    setServoAngle(180);
-    Serial.println("Angle: 180°"); delay(1000);
-    // Back to center
-    setServoAngle(90);
-    Serial.println("Angle: 90°"); delay(1000);
+   
 }
