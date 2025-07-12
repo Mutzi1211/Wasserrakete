@@ -1,15 +1,13 @@
 #include <Wire.h>
-#include <SPI.h>
-#include <SD.h>
-#include <WiFi.h>
-#include <AsyncTCP.h>
-#include <ESPAsyncWebServer.h>
-#include <SparkFun_BNO08x_Arduino_Library.h>
-#include <SparkFunBME280.h>
 
-// ---- I²C-Pins ----
-#define SDA_PIN 21
-#define SCL_PIN 22
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// OLED display parameters
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+#define OLED_RESET    -1 // Reset pin # (or -1 if sharing Arduino reset pin)
+
 
 // ---- SD-Karte (SPI) ----
 #define SD_CS_PIN 5 // CS→GPIO5, MOSI→23, MISO→19, SCK→18
