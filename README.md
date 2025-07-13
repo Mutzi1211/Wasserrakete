@@ -21,7 +21,7 @@ Ein Überblick über alle Projektbestandteile – von CAD über Code bis zu Anfo
   ➤ Zeichnung für die Rakete
 ---
 
-### 📁 code/data_logger
+### 📁 code
 Die komplette Firmware für den Datenlogger (ESP32, SD-Logging, Webserver etc.)
 
 
