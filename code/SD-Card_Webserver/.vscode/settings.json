@@ -1,7 +1,17 @@
 {
     // Erkenne .ino-Dateien als C++
     "files.associations": {
-        "*.ino": "cpp"
+        "*.ino": "cpp",
+        "array": "cpp",
+        "deque": "cpp",
+        "list": "cpp",
+        "string": "cpp",
+        "unordered_map": "cpp",
+        "unordered_set": "cpp",
+        "vector": "cpp",
+        "string_view": "cpp",
+        "initializer_list": "cpp",
+        "regex": "cpp"
     },
     // Automatisch beim Speichern formatieren
     "editor.formatOnSave": true,
