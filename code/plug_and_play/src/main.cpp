@@ -302,8 +302,8 @@ bool check_parachute() {
   bool zeroG = false;
 
   if (icm_active) {
-
-    if (icm.getAccZ() < 200) {
+    float totalAcc = sqrt(icm.getAccX() * icm.getAccX() + icm.getAccY() * icm.getAccY() + icm.getAccZ() * icm.getAccZ());
+    if (totalAcc < 200) {
       zeroG = true;
     } else {
       zeroG = false;
@@ -343,11 +343,11 @@ void deploy_parachute() {
   display.show("Hoehe: \n" + String(height));
 }
 
+
 void loop() {
 
   uint32_t now = micros();
   if ((int32_t)(now - nextMicros) >= 0) {
-
     nextMicros += PUBLISH_INTERVAL * 1000;
 
     record();

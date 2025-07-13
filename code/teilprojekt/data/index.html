@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <title>SD-Dateibrowser</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background-color: #f4f4f4;
+      padding: 2em;
+      position: relative; /* für absolute Positionierung der Akkuanzeige */
+    }
+    /* Akkuanzeige oben rechts */
+    #battery {
+      position: absolute;
+      top: 1em;
+      right: 1em;
+      background: #fff;
+      padding: 0.5em 1em;
+      border-radius: 4px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+      font-size: 0.9em;
+      display: flex;
+      align-items: center;
+      gap: 0.5em;
+    }
+    #battery.charging::before {
+      content: "🔌";
+    }
+    #battery.not-charging::before {
+      content: "🔋";
+    }
+
+    ul {
+      list-style: none;
+      padding-left: 1em;
+      border-left: 2px solid #ccc;
+    }
+    li {
+      margin: 4px 0;
+    }
+    .folder::before {
+      content: "📁 ";
+    }
+    .file::before {
+      content: ""; /* kein Default-Icon */
+    }
+    .toggle {
+      cursor: pointer;
+    }
+    .hidden {
+      display: none;
+    }
+    form {
+      margin-bottom: 2em;
+    }
+    /* Papierkorb-Icon */
+    .delete {
+      margin-right: 0.5em;
+      font-size: 1em;
+    }
+    .delete.enabled {
+      cursor: pointer;
+      color: #c00;
+    }
+    .delete.disabled {
+      color: #999;
+      cursor: default;
+      opacity: 0.5;
+    }
+  </style>
+</head>
+<body>
+  <!-- Akkuanzeige -->
+  <div id="battery" class="not-charging">
+    <span id="battery-soc">-- %</span>
+    <span id="battery-voltage">-- V</span>
+  </div>
+
+  <h2>📤 Datei hochladen</h2>
+  <form id="uploadForm" enctype="multipart/form-data">
+    <input type="file" name="upload" id="fileInput" required>
+    <input type="submit" value="Hochladen">
+  </form>
+
+  <h2>📂 SD-Karte Inhalt</h2>
+  <div id="tree">Lade...</div>
+
+  <script>
+    // SSE-Verbindung (optional, neu laden on push)
+    const evtSource = new EventSource("/events");
+    evtSource.addEventListener("file-changed", () => location.reload());
+    evtSource.onerror = err => console.error("SSE-Error:", err);
+
+    async function loadTree() {
+      try {
+        const res = await fetch("/list.json");
+        const data = await res.json();
+        const container = document.getElementById("tree");
+        container.innerHTML = "";
+        container.appendChild(buildTree(data, ""));
+      } catch {
+        document.getElementById("tree").textContent = "⚠️ Fehler beim Laden.";
+      }
+    }
+
+    function buildTree(data, currentPath) {
+      const ul = document.createElement("ul");
+      data.forEach(item => {
+        const li = document.createElement("li");
+        li.className = item.type;
+        const itemPath = currentPath + item.name;
+
+        if (item.type === "folder") {
+          const span = document.createElement("span");
+          span.className = "toggle";
+          span.textContent = item.name;
+          span.onclick = () => childUl.classList.toggle("hidden");
+          li.appendChild(span);
+
+          const childUl = buildTree(item.children||[], itemPath + "/");
+          childUl.classList.add("hidden");
+          li.appendChild(childUl);
+
+        } else {
+          const del = document.createElement("span");
+          del.classList.add("delete");
+          del.textContent = "🗑️";
+
+          const isCsv = item.name.toLowerCase().endsWith(".csv");
+          if (isCsv) {
+            del.classList.add("enabled");
+            del.title = "Löschen";
+            del.onclick = async () => {
+              try {
+                const res = await fetch('/delete?path='+encodeURIComponent(itemPath), {
+                  method: 'DELETE'
+                });
+                if (res.ok) location.reload();
+                else alert('❌ Löschen fehlgeschlagen');
+              } catch (err) {
+                alert('⚠️ Fehler: '+err.message);
+              }
+            };
+          } else {
+            del.classList.add("disabled");
+            del.title = "Nur .csv-Dateien können gelöscht werden";
+          }
+          li.appendChild(del);
+
+          const a = document.createElement("a");
+          a.href = "/" + itemPath;
+          a.textContent = item.name;
+          a.target = "_blank";
+          li.appendChild(a);
+        }
+
+        ul.appendChild(li);
+      });
+      return ul;
+    }
+
+    // Upload-Formular abfangen
+    document.getElementById('uploadForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const input = document.getElementById('fileInput');
+      if (!input.files.length) return;
+      const formData = new FormData();
+      formData.append('upload', input.files[0]);
+      try {
+        const res = await fetch('/upload',{ method:'POST', body:formData });
+        if (res.ok) location.reload();
+        else alert('❌ Upload fehlgeschlagen: '+res.statusText);
+      } catch (err) {
+        alert('⚠️ Fehler beim Upload: '+err.message);
+      }
+    });
+
+    // Batterie-Daten von /battery abfragen und anzeigen
+    async function updateBattery() {
+      try {
+        const res = await fetch('/battery');
+        if (!res.ok) throw new Error(res.statusText);
+        const batt = await res.json();
+        // SOC und Spannung aktualisieren
+        document.getElementById('battery-soc').textContent     = batt.soc.toFixed(1) + ' %';
+        document.getElementById('battery-voltage').textContent = batt.voltage.toFixed(3) + ' V';
+        // Ladezustand (charging) klassenbasiert
+        const div = document.getElementById('battery');
+        if (batt.charging) {
+          div.classList.add('charging');
+          div.classList.remove('not-charging');
+        } else {
+          div.classList.add('not-charging');
+          div.classList.remove('charging');
+        }
+      } catch (err) {
+        console.error('Battery fetch error:', err);
+      }
+    }
+
+    // initial
+    loadTree();
+    updateBattery();
+    // alle 10 Sekunden aktualisieren
+    setInterval(updateBattery, 10000);
+  </script>
+</body>
+</html>

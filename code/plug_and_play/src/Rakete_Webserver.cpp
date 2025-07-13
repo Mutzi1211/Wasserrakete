@@ -69,7 +69,7 @@ void Rakete_Webserver::init() {
     this->saveJsonListing("/list.json");
 
     if (path == "/") {
-      request->redirect("/index_html");
+      request->redirect("/index.html");
       return;
     }
 
