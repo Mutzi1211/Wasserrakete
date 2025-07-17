@@ -364,7 +364,7 @@ void deploy_parachute()
 
 void stop_parachute()
 {
-    servo.setAngle(30);
+    servo.setAngle(0);
     parachute_progress = false;
 }
 
